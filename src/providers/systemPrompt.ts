@@ -54,6 +54,7 @@ ${historyText}
 
 Based on the current screenshot, decide what action to take next to complete the test.
 You must respond with a JSON object containing the action(s) to take.
+Do not include any other text, markdown, or code fences. Output JSON only.
 
 Available actions:
 - click: { "type": "click", "x": number, "y": number }

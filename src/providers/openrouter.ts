@@ -81,8 +81,8 @@ export class OpenRouterProvider implements ComputerUseProvider {
       };
     }
 
-    try {
-      const parsed = JSON.parse(content) as {
+    const tryParse = (input: string): GetNextActionResult => {
+      const parsed = JSON.parse(input) as {
         actions?: Action[];
         reasoning?: string;
       };
@@ -93,19 +93,44 @@ export class OpenRouterProvider implements ComputerUseProvider {
           reasoning,
         };
       }
+      const doneAction: Action = {
+        type: "done",
+        success: false,
+        reason: "No actions returned",
+      };
       return {
-        actions: [{ type: "done", success: false, reason: "No actions returned" }],
+        actions: [doneAction],
         reasoning,
       };
+    };
+
+    const extractJsonObject = (input: string): string | null => {
+      const firstBrace = input.indexOf("{");
+      const lastBrace = input.lastIndexOf("}");
+      if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
+        return null;
+      }
+      return input.slice(firstBrace, lastBrace + 1);
+    };
+
+    try {
+      return tryParse(content);
     } catch {
+      const extracted = extractJsonObject(content);
+      if (extracted) {
+        try {
+          return tryParse(extracted);
+        } catch {
+          // fall through
+        }
+      }
+      const doneAction: Action = {
+        type: "done",
+        success: false,
+        reason: `Failed to parse response: ${content}`,
+      };
       return {
-        actions: [
-          {
-            type: "done",
-            success: false,
-            reason: `Failed to parse response: ${content}`,
-          },
-        ],
+        actions: [doneAction],
         reasoning: "Failed to parse AI response",
       };
     }
