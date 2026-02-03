@@ -5,6 +5,7 @@ import {
   GetNextActionResult,
 } from "./base.js";
 import { Action } from "../types/actions.js";
+import { buildSystemPrompt } from "./systemPrompt.js";
 
 /**
  * Claude computer use provider using native Anthropic SDK
@@ -28,29 +29,12 @@ export class AnthropicProvider implements ComputerUseProvider {
   async getNextAction(params: GetNextActionParams): Promise<GetNextActionResult> {
     const { screenshot, testDescription, actionHistory, viewport } = params;
 
-    // Build conversation context
-    const historyText =
-      actionHistory.length > 0
-        ? `\n\nActions taken so far:\n${actionHistory
-            .map((h, i) => `${i + 1}. ${h.action.type}: ${h.reasoning}`)
-            .join("\n")}`
-        : "";
-
-    const systemPrompt = `You are an AI testing assistant that helps execute end-to-end tests on web applications.
-Your task is to complete the following test:
-"${testDescription}"
-
-${historyText}
-
-Based on the current screenshot, decide what action to take next to complete the test.
-When you have successfully completed the test, use the done action with success: true.
-If you cannot complete the test, use the done action with success: false and explain why.
-
-IMPORTANT:
-- Coordinates should be within the viewport (${viewport.width}x${viewport.height})
-- Click on elements that are visible and interactive
-- Wait for page loads when necessary
-- Use scroll if you need to see more content`;
+    const systemPrompt = buildSystemPrompt({
+      testDescription,
+      actionHistory,
+      viewport,
+      mode: "claude",
+    });
 
     // Use beta API for computer use
     const response = await this.client.beta.messages.create({

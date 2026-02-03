@@ -85,9 +85,11 @@ export class BrowserExecutor {
           break;
       }
 
+      await this.waitForScreenshotJitter();
       const screenshot = await captureScreenshot(this.page);
       return { action, screenshot, timestamp };
     } catch (error) {
+      await this.waitForScreenshotJitter();
       const screenshot = await captureScreenshot(this.page);
       return {
         action,
@@ -188,5 +190,10 @@ export class BrowserExecutor {
     } catch {
       // Timeout is okay, page might have ongoing requests
     }
+  }
+
+  private async waitForScreenshotJitter(): Promise<void> {
+    const delayMs = 300 + Math.floor(Math.random() * 701);
+    await this.page.waitForTimeout(delayMs);
   }
 }

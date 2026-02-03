@@ -29,6 +29,7 @@ export interface AgenticTesterOptions {
   maxSteps: number;
   viewport: { width: number; height: number };
   screenshotDir?: string;
+  retryNoResponse?: number;
 }
 
 /**
@@ -56,6 +57,7 @@ export class AgenticTester {
       maxSteps: options.maxSteps || 50,
       viewport: options.viewport || { width: 1280, height: 720 },
       screenshotDir: options.screenshotDir,
+      retryNoResponse: options.retryNoResponse ?? 2,
     };
   }
 
@@ -75,20 +77,28 @@ export class AgenticTester {
 
       for (let i = 0; i < this.options.maxSteps; i++) {
         // 1. Take screenshot
-        const screenshot = await captureScreenshot(this.page);
         const viewport = getViewportSize(this.page);
 
         console.log(`    Step ${i + 1}/${this.options.maxSteps}...`);
 
-        // 2. Ask AI for next action
-        const { action, reasoning } = await this.provider.getNextAction({
-          screenshot,
+        // 2. Ask AI for next action (retry on empty/invalid response)
+        const { action, reasoning } = await this.getNextActionWithRetry({
           testDescription: test.description,
           actionHistory,
           viewport,
         });
 
         console.log(`      Action: ${action.type} - ${reasoning.slice(0, 60)}...`);
+
+        if (action.type !== "done" && this.isRepeatedAction(actionHistory, action, 3)) {
+          const reason = "Repeated same action without progress";
+          console.log(`    ✗ Test failed: ${reason}`);
+          return {
+            success: false,
+            steps,
+            message: reason,
+          };
+        }
 
         // 3. Check if done
         if (action.type === "done") {
@@ -152,5 +162,74 @@ export class AgenticTester {
       value: "text" in step.action ? (step.action as { text: string }).text : undefined,
       reasoning: step.reasoning,
     }));
+  }
+
+  private async getNextActionWithRetry(params: {
+    testDescription: string;
+    actionHistory: Array<{ action: Action; reasoning: string }>;
+    viewport: { width: number; height: number };
+  }): Promise<{ action: Action; reasoning: string }> {
+    const maxRetries = this.options.retryNoResponse ?? 0;
+    let attempt = 0;
+
+    while (true) {
+      const screenshot = await captureScreenshot(this.page);
+      const result = await this.provider.getNextAction({
+        screenshot,
+        testDescription: params.testDescription,
+        actionHistory: params.actionHistory,
+        viewport: params.viewport,
+      });
+
+      if (!this.shouldRetry(result.action, result.reasoning) || attempt >= maxRetries) {
+        return result;
+      }
+
+      attempt++;
+      console.log(`      No response from AI, retrying (${attempt}/${maxRetries})...`);
+    }
+  }
+
+  private shouldRetry(action: Action, reasoning: string): boolean {
+    if (action.type !== "done") return false;
+    if (action.success) return false;
+    const reason = (action as { reason?: string }).reason || reasoning || "";
+    return (
+      reason.includes("No response from AI") ||
+      reason.includes("Failed to parse AI response") ||
+      reason.includes("Failed to parse response")
+    );
+  }
+
+  private isRepeatedAction(
+    actionHistory: Array<{ action: Action; reasoning: string }>,
+    action: Action,
+    repeatCount: number
+  ): boolean {
+    if (actionHistory.length < repeatCount) return false;
+    const signature = this.actionSignature(action);
+    const recent = actionHistory.slice(-repeatCount);
+    return recent.every((item) => this.actionSignature(item.action) === signature);
+  }
+
+  private actionSignature(action: Action): string {
+    switch (action.type) {
+      case "click":
+      case "double_click":
+      case "mouse_move":
+        return `${action.type}:${action.x},${action.y}:${"button" in action ? action.button : ""}`;
+      case "type":
+        return `${action.type}:${action.text}`;
+      case "key":
+        return `${action.type}:${action.key}`;
+      case "scroll":
+        return `${action.type}:${action.x},${action.y}:${action.direction}:${action.amount}`;
+      case "wait":
+        return `${action.type}:${action.ms}`;
+      case "done":
+        return `${action.type}:${action.success}:${action.reason}`;
+      default:
+        return `${action.type}`;
+    }
   }
 }

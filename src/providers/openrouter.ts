@@ -5,6 +5,7 @@ import {
   GetNextActionResult,
 } from "./base.js";
 import { Action } from "../types/actions.js";
+import { buildSystemPrompt } from "./systemPrompt.js";
 
 /**
  * OpenRouter provider - routes to various models via OpenAI-compatible API
@@ -35,41 +36,12 @@ export class OpenRouterProvider implements ComputerUseProvider {
   async getNextAction(params: GetNextActionParams): Promise<GetNextActionResult> {
     const { screenshot, testDescription, actionHistory, viewport } = params;
 
-    // Build conversation context
-    const historyText =
-      actionHistory.length > 0
-        ? `\n\nActions taken so far:\n${actionHistory
-            .map((h, i) => `${i + 1}. ${h.action.type}: ${h.reasoning}`)
-            .join("\n")}`
-        : "";
-
-    const systemPrompt = `You are an AI testing assistant that helps execute end-to-end tests on web applications.
-Your task is to complete the following test:
-"${testDescription}"
-
-${historyText}
-
-Based on the current screenshot, decide what action to take next to complete the test.
-You must respond with a JSON object containing the action to take.
-
-Available actions:
-- click: { "type": "click", "x": number, "y": number }
-- double_click: { "type": "double_click", "x": number, "y": number }
-- type: { "type": "type", "text": string }
-- key: { "type": "key", "key": string } (e.g., "Enter", "Tab", "Escape")
-- scroll: { "type": "scroll", "x": number, "y": number, "direction": "up" | "down", "amount": number }
-- wait: { "type": "wait", "ms": number }
-- done: { "type": "done", "success": boolean, "reason": string }
-
-Respond with a JSON object with two fields:
-- "action": the action object
-- "reasoning": a brief explanation of why you're taking this action
-
-IMPORTANT:
-- Coordinates should be within the viewport (${viewport.width}x${viewport.height})
-- Click on elements that are visible and interactive
-- When the test is complete, use the done action with success: true
-- If you cannot complete the test, use done with success: false`;
+    const systemPrompt = buildSystemPrompt({
+      testDescription,
+      actionHistory,
+      viewport,
+      mode: "json",
+    });
 
     const response = await this.client.chat.completions.create({
       model: this.model,
