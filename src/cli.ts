@@ -29,6 +29,7 @@ program
   .command("run [suite]")
   .description("Run tests")
   .option("--agentic", "Force agentic mode (skip static tests)")
+  .option("--verbose", "Log full reasoning and tool use")
   .option("--env <environment>", "Run against specific environment")
   .option("--headless", "Run browser in headless mode")
   .option("--headed", "Run browser in visible mode (overrides auto-detect)")

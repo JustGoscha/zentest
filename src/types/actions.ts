@@ -27,6 +27,12 @@ export type MouseAction =
       endY: number;
     };
 
+export type ClickButtonAction = {
+  type: "click_button";
+  name: string;
+  exact?: boolean;
+};
+
 // Keyboard actions
 export type KeyboardAction =
   | { type: "type"; text: string }
@@ -50,6 +56,7 @@ export type ControlAction =
 // Union of all action types
 export type Action =
   | MouseAction
+  | ClickButtonAction
   | KeyboardAction
   | ScrollAction
   | ControlAction;
@@ -89,5 +96,15 @@ export interface RecordedStep {
   reasoning: string;
   elementInfo?: ElementInfo;
   screenshot?: Buffer;
+  error?: string;
   timestamp: number;
+}
+
+/**
+ * History entry for prompt context
+ */
+export interface ActionHistoryEntry {
+  action: Action;
+  reasoning: string;
+  error?: string;
 }

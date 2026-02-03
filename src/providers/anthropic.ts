@@ -8,7 +8,7 @@ import { Action } from "../types/actions.js";
 import { buildSystemPrompt } from "./systemPrompt.js";
 
 /**
- * Claude computer use provider using native Anthropic SDK
+ * Claude provider using native Anthropic SDK
  */
 export class AnthropicProvider implements ComputerUseProvider {
   readonly name = "anthropic";
@@ -33,23 +33,13 @@ export class AnthropicProvider implements ComputerUseProvider {
       testDescription,
       actionHistory,
       viewport,
-      mode: "claude",
+      mode: "json",
     });
 
-    // Use beta API for computer use
-    const response = await this.client.beta.messages.create({
+    const response = await this.client.messages.create({
       model: this.model,
       max_tokens: 1024,
       system: systemPrompt,
-      tools: [
-        {
-          type: "computer_20250124",
-          name: "computer",
-          display_width_px: viewport.width,
-          display_height_px: viewport.height,
-          display_number: 1,
-        },
-      ],
       messages: [
         {
           role: "user",
@@ -64,144 +54,131 @@ export class AnthropicProvider implements ComputerUseProvider {
             },
             {
               type: "text",
-              text: "What action should I take next to complete the test?",
+              text: "What action should I take next to complete the test? Respond with JSON.",
             },
           ],
         },
       ],
-      betas: ["computer-use-2025-01-24"],
     });
 
-    // Extract the action from the response
     return this.parseResponse(response);
   }
 
-  private parseResponse(response: Anthropic.Beta.Messages.BetaMessage): GetNextActionResult {
-    // Find tool use blocks
-    const toolUse = response.content.find(
-      (block): block is Anthropic.Beta.Messages.BetaToolUseBlock =>
-        block.type === "tool_use"
-    );
-
-    // Find text blocks for reasoning
+  private parseResponse(response: Anthropic.Messages.Message): GetNextActionResult {
     const textBlock = response.content.find(
-      (block): block is Anthropic.Beta.Messages.BetaTextBlock =>
-        block.type === "text"
+      (block): block is Anthropic.Messages.TextBlock => block.type === "text"
     );
-    const reasoning = textBlock?.text || "No reasoning provided";
+    const content = textBlock?.text;
+    if (!content) {
+      return {
+        actions: [{ type: "done", success: false, reason: "No response from AI" }],
+        reasoning: "No response from AI",
+      };
+    }
 
-    if (!toolUse || toolUse.name !== "computer") {
-      // No tool use, check if this is a completion message
-      if (response.stop_reason === "end_turn") {
+    try {
+      const parsed = JSON.parse(content) as {
+        actions?: Action[];
+        reasoning?: string;
+      };
+      const reasoning = parsed.reasoning || "No reasoning provided";
+      if (Array.isArray(parsed.actions) && parsed.actions.length > 0) {
         return {
-          action: { type: "done", success: true, reason: reasoning },
+          actions: parsed.actions.map((action) => this.validateAction(action)),
           reasoning,
         };
       }
       return {
-        action: { type: "done", success: false, reason: "No action returned" },
+        actions: [{ type: "done", success: false, reason: "No actions returned" }],
         reasoning,
       };
+    } catch {
+      return {
+        actions: [
+          {
+            type: "done",
+            success: false,
+            reason: `Failed to parse response: ${content}`,
+          },
+        ],
+        reasoning: "Failed to parse AI response",
+      };
     }
-
-    const input = toolUse.input as Record<string, unknown>;
-    const action = this.mapClaudeAction(input);
-
-    return { action, reasoning };
   }
 
-  private mapClaudeAction(input: Record<string, unknown>): Action {
-    const actionType = input.action as string;
-    const coordinate = input.coordinate as [number, number] | undefined;
+  private validateAction(action: unknown): Action {
+    if (!action || typeof action !== "object") {
+      return { type: "done", success: false, reason: "Invalid action object" };
+    }
 
-    switch (actionType) {
+    const a = action as Record<string, unknown>;
+    const type = a.type as string;
+
+    switch (type) {
+      case "click":
+      case "double_click":
       case "mouse_move":
         return {
-          type: "mouse_move",
-          x: coordinate?.[0] || 0,
-          y: coordinate?.[1] || 0,
-        };
+          type: type as "click" | "double_click" | "mouse_move",
+          x: Number(a.x) || 0,
+          y: Number(a.y) || 0,
+          ...(type === "click" && a.button
+            ? { button: a.button as "left" | "right" | "middle" }
+            : {}),
+        } as Action;
 
-      case "left_click":
-      case "click":
+      case "click_button":
         return {
-          type: "click",
-          x: coordinate?.[0] || 0,
-          y: coordinate?.[1] || 0,
-          button: "left",
+          type: "click_button",
+          name: String(a.name || ""),
+          exact: "exact" in a ? Boolean(a.exact) : true,
         };
 
-      case "right_click":
+      case "mouse_down":
+      case "mouse_up":
         return {
-          type: "click",
-          x: coordinate?.[0] || 0,
-          y: coordinate?.[1] || 0,
-          button: "right",
-        };
+          type: type as "mouse_down" | "mouse_up",
+          x: Number(a.x) || 0,
+          y: Number(a.y) || 0,
+          ...(a.button ? { button: a.button as "left" | "right" | "middle" } : {}),
+        } as Action;
 
-      case "middle_click":
-        return {
-          type: "click",
-          x: coordinate?.[0] || 0,
-          y: coordinate?.[1] || 0,
-          button: "middle",
-        };
-
-      case "double_click":
-        return {
-          type: "double_click",
-          x: coordinate?.[0] || 0,
-          y: coordinate?.[1] || 0,
-        };
-
-      case "left_click_drag": {
-        const startCoordinate = input.start_coordinate as [number, number] | undefined;
+      case "drag":
         return {
           type: "drag",
-          startX: startCoordinate?.[0] || 0,
-          startY: startCoordinate?.[1] || 0,
-          endX: coordinate?.[0] || 0,
-          endY: coordinate?.[1] || 0,
+          startX: Number(a.startX) || 0,
+          startY: Number(a.startY) || 0,
+          endX: Number(a.endX) || 0,
+          endY: Number(a.endY) || 0,
         };
-      }
 
       case "type":
-        return {
-          type: "type",
-          text: (input.text as string) || "",
-        };
+        return { type: "type", text: String(a.text || "") };
 
       case "key":
-        return {
-          type: "key",
-          key: (input.key as string) || "",
-        };
+        return { type: "key", key: String(a.key || "Enter") };
 
-      case "scroll": {
-        const scrollCoordinate = input.coordinate as [number, number] | undefined;
-        const scrollDirection = input.scroll_direction as string;
-        const scrollAmount = input.scroll_amount as number | undefined;
+      case "scroll":
         return {
           type: "scroll",
-          x: scrollCoordinate?.[0] || 0,
-          y: scrollCoordinate?.[1] || 0,
-          direction: scrollDirection === "up" ? "up" : "down",
-          amount: scrollAmount || 100,
+          x: Number(a.x) || 0,
+          y: Number(a.y) || 0,
+          direction: a.direction === "up" ? "up" : "down",
+          amount: Number(a.amount) || 100,
         };
-      }
-
-      case "screenshot":
-        return { type: "screenshot" };
 
       case "wait":
-        return { type: "wait", ms: 1000 };
+        return { type: "wait", ms: Number(a.ms) || 1000 };
 
-      default:
+      case "done":
         return {
           type: "done",
-          success: false,
-          reason: `Unknown action type: ${actionType}`,
+          success: Boolean(a.success),
+          reason: String(a.reason || ""),
         };
+
+      default:
+        return { type: "done", success: false, reason: `Unknown action: ${type}` };
     }
   }
 }

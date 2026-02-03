@@ -1,4 +1,4 @@
-import { Action } from "../types/actions.js";
+import { Action, ActionHistoryEntry } from "../types/actions.js";
 
 /**
  * Parameters for getting the next action from AI
@@ -9,7 +9,7 @@ export interface GetNextActionParams {
   /** The test description in plain English */
   testDescription: string;
   /** History of actions taken so far */
-  actionHistory: Array<{ action: Action; reasoning: string }>;
+  actionHistory: ActionHistoryEntry[];
   /** Current viewport dimensions */
   viewport: { width: number; height: number };
 }
@@ -18,8 +18,8 @@ export interface GetNextActionParams {
  * Result from the AI provider
  */
 export interface GetNextActionResult {
-  /** The action to execute */
-  action: Action;
+  /** Optional batch of actions to execute in order */
+  actions: Action[];
   /** The AI's reasoning for this action */
   reasoning: string;
 }

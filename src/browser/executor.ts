@@ -35,17 +35,40 @@ export class BrowserExecutor {
           break;
 
         case "click": {
-          await this.page.mouse.click(action.x, action.y, {
+          const target = await this.findClickableTarget(action.x, action.y);
+          const clickX = target?.x ?? action.x;
+          const clickY = target?.y ?? action.y;
+          await this.page.mouse.click(clickX, clickY, {
             button: action.button || "left",
           });
-          const elementInfo = await this.getElementAtPoint(action.x, action.y);
+          const elementInfo =
+            target?.elementInfo ?? (await this.getElementAtPoint(clickX, clickY));
+          const screenshot = await captureScreenshot(this.page);
+          return { action, screenshot, elementInfo, timestamp };
+        }
+
+        case "click_button": {
+          const locator = this.page.getByRole("button", {
+            name: action.name,
+            exact: action.exact ?? true,
+          });
+          const handle = await locator.first().elementHandle();
+          if (!handle) {
+            throw new Error(`No button found with name: ${action.name}`);
+          }
+          await locator.first().click();
+          const elementInfo = await this.getElementInfoFromHandle(handle);
           const screenshot = await captureScreenshot(this.page);
           return { action, screenshot, elementInfo, timestamp };
         }
 
         case "double_click": {
-          await this.page.mouse.dblclick(action.x, action.y);
-          const elementInfo = await this.getElementAtPoint(action.x, action.y);
+          const target = await this.findClickableTarget(action.x, action.y);
+          const clickX = target?.x ?? action.x;
+          const clickY = target?.y ?? action.y;
+          await this.page.mouse.dblclick(clickX, clickY);
+          const elementInfo =
+            target?.elementInfo ?? (await this.getElementAtPoint(clickX, clickY));
           const screenshot = await captureScreenshot(this.page);
           return { action, screenshot, elementInfo, timestamp };
         }
@@ -176,6 +199,168 @@ export class BrowserExecutor {
       );
 
       return elementInfo || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async getElementInfoFromHandle(
+    handle: import("playwright").ElementHandle<Element>
+  ): Promise<ElementInfo | undefined> {
+    try {
+      const box = await handle.boundingBox();
+      if (!box) return undefined;
+      const centerX = box.x + box.width / 2;
+      const centerY = box.y + box.height / 2;
+      return await this.getElementAtPoint(centerX, centerY);
+    } catch {
+      return undefined;
+    }
+  }
+
+
+  /**
+   * Find a nearby interactive element and return its center point.
+   */
+  private async findClickableTarget(
+    x: number,
+    y: number
+  ): Promise<{ x: number; y: number; elementInfo: ElementInfo } | undefined> {
+    try {
+      const target = await this.page.evaluate(({ x, y }) => {
+        const isInteractive = (el: Element | null): el is Element => {
+          if (!el) return false;
+          const tag = el.tagName.toLowerCase();
+          if (["button", "a", "input", "textarea", "select", "label"].includes(tag)) {
+            return true;
+          }
+          const role = el.getAttribute("role");
+          if (
+            role === "button" ||
+            role === "link" ||
+            role === "checkbox" ||
+            role === "tab" ||
+            role === "menuitem"
+          ) {
+            return true;
+          }
+          if (el.hasAttribute("onclick")) return true;
+          const tabIndex = el.getAttribute("tabindex");
+          if (tabIndex && tabIndex !== "-1") return true;
+          const style = window.getComputedStyle(el as HTMLElement);
+          return style.cursor === "pointer";
+        };
+
+        const buildSelector = (el: Element): string => {
+          const testId = el.getAttribute("data-testid");
+          if (testId) return `[data-testid="${testId}"]`;
+
+          const id = (el as HTMLElement).id;
+          if (id) return `#${id}`;
+
+          const role = el.getAttribute("role");
+          const ariaLabel = el.getAttribute("aria-label");
+          if (role && ariaLabel) {
+            return `[role="${role}"][aria-label="${ariaLabel}"]`;
+          }
+
+          const tagName = el.tagName.toLowerCase();
+          const text = el.textContent?.trim().slice(0, 50);
+          if (
+            (tagName === "button" || tagName === "a") &&
+            text &&
+            text.length < 30
+          ) {
+            return `${tagName}:has-text("${text}")`;
+          }
+
+          const className = el.className;
+          if (className && typeof className === "string") {
+            const classes = className.split(" ").filter((c) => c).slice(0, 2);
+            if (classes.length > 0) {
+              return `${tagName}.${classes.join(".")}`;
+            }
+          }
+
+          return tagName;
+        };
+
+        const interactiveSelector =
+          'button,a,input,textarea,select,label,[role="button"],[role="link"],[role="checkbox"],[role="tab"],[role="menuitem"],[onclick],[tabindex]';
+
+        const findBestElement = (): Element | null => {
+          const radius = 40;
+          const step = 6;
+          let best: Element | null = null;
+          let bestDist = Infinity;
+
+          for (let dx = -radius; dx <= radius; dx += step) {
+            for (let dy = -radius; dy <= radius; dy += step) {
+              const px = x + dx;
+              const py = y + dy;
+              if (px < 0 || py < 0 || px > window.innerWidth || py > window.innerHeight) {
+                continue;
+              }
+              const el = document.elementFromPoint(px, py) as Element | null;
+              const target =
+                (isInteractive(el)
+                  ? el
+                  : el
+                    ? (el as Element).closest(interactiveSelector)
+                    : null) || null;
+              if (!target) continue;
+              const rect = target.getBoundingClientRect();
+              const cx = rect.left + rect.width / 2;
+              const cy = rect.top + rect.height / 2;
+              const dist = Math.hypot(cx - x, cy - y);
+              if (dist < bestDist) {
+                bestDist = dist;
+                best = target;
+              }
+            }
+          }
+
+          return best;
+        };
+
+        const element = findBestElement();
+        if (!element) return null;
+
+        const rect = element.getBoundingClientRect();
+        const centerX = rect.left + rect.width / 2;
+        const centerY = rect.top + rect.height / 2;
+
+        return {
+          x: centerX,
+          y: centerY,
+          elementInfo: {
+            tagName: element.tagName.toLowerCase(),
+            text: element.textContent?.trim().slice(0, 100),
+            role: element.getAttribute("role") || undefined,
+            name:
+              element.getAttribute("aria-label") ||
+              element.getAttribute("name") ||
+              undefined,
+            id: (element as HTMLElement).id || undefined,
+            className:
+              typeof (element as HTMLElement).className === "string"
+                ? (element as HTMLElement).className
+                : undefined,
+            href:
+              element instanceof HTMLAnchorElement ? element.href : undefined,
+            placeholder:
+              element instanceof HTMLInputElement ||
+              element instanceof HTMLTextAreaElement
+                ? element.placeholder
+                : undefined,
+            ariaLabel: element.getAttribute("aria-label") || undefined,
+            selector: buildSelector(element),
+          },
+        };
+      }, { x, y });
+
+      if (!target) return undefined;
+      return target;
     } catch {
       return undefined;
     }

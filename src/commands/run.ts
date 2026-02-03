@@ -17,6 +17,7 @@ interface RunOptions {
   env?: string;
   headless?: boolean;
   headed?: boolean;
+  verbose?: boolean;
 }
 
 export async function run(suite: string | undefined, options: RunOptions) {
@@ -48,6 +49,9 @@ export async function run(suite: string | undefined, options: RunOptions) {
   console.log(`  - Healer:  ${config.models.healerModel}`);
   if (options.agentic) {
     console.log("Mode: Agentic (forced)");
+  }
+  if (options.verbose) {
+    console.log("Verbose: on");
   }
   console.log("");
 
@@ -154,6 +158,7 @@ async function runTestFile(
         const tester = new AgenticTester(page, baseUrl, agenticProvider, {
           maxSteps: config.maxSteps,
           viewport: config.viewport,
+          verbose: options.verbose,
         });
 
         const result = await tester.run(test);

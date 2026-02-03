@@ -54,6 +54,10 @@ export class TestBuilder {
         if (!selector) return null;
         return `await ${selector}.click();`;
 
+      case "click_button":
+        if (selector) return `await ${selector}.click();`;
+        return `await page.getByRole('button', { name: '${this.escapeString(step.value || "")}', exact: true }).click();`;
+
       case "double_click":
         if (!selector) return null;
         return `await ${selector}.dblclick();`;

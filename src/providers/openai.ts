@@ -70,27 +70,36 @@ export class OpenAIProvider implements ComputerUseProvider {
     const content = response.choices[0]?.message?.content;
     if (!content) {
       return {
-        action: { type: "done", success: false, reason: "No response from AI" },
+        actions: [{ type: "done", success: false, reason: "No response from AI" }],
         reasoning: "No response from AI",
       };
     }
 
     try {
       const parsed = JSON.parse(content) as {
-        action: Action;
-        reasoning: string;
+        actions?: Action[];
+        reasoning?: string;
       };
+      const reasoning = parsed.reasoning || "No reasoning provided";
+      if (Array.isArray(parsed.actions) && parsed.actions.length > 0) {
+        return {
+          actions: parsed.actions.map((action) => this.validateAction(action)),
+          reasoning,
+        };
+      }
       return {
-        action: this.validateAction(parsed.action),
-        reasoning: parsed.reasoning || "No reasoning provided",
+        actions: [{ type: "done", success: false, reason: "No actions returned" }],
+        reasoning,
       };
     } catch {
       return {
-        action: {
-          type: "done",
-          success: false,
-          reason: `Failed to parse response: ${content}`,
-        },
+        actions: [
+          {
+            type: "done",
+            success: false,
+            reason: `Failed to parse response: ${content}`,
+          },
+        ],
         reasoning: "Failed to parse AI response",
       };
     }
@@ -116,6 +125,13 @@ export class OpenAIProvider implements ComputerUseProvider {
             ? { button: a.button as "left" | "right" | "middle" }
             : {}),
         } as Action;
+
+      case "click_button":
+        return {
+          type: "click_button",
+          name: String(a.name || ""),
+          exact: "exact" in a ? Boolean(a.exact) : true,
+        };
 
       case "type":
         return { type: "type", text: String(a.text || "") };
