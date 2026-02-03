@@ -10,7 +10,7 @@ Tests are defined in your language. And executed without writing any code (yours
 
 1. First you create a new app test suite:
 
-- enter website: zenmemo.app
+- enter website: example.com
 - environment: production
 + add environment -> you can add different environments for dev / testing / staging / beta
     - website: https://omg--listen-to-this.netlify.live/
@@ -51,9 +51,9 @@ Additionally the **Test Builder Agent** agent will try to build out a Playwright
 
 For example:
 
-1. **Agentic Tester** reads instructions:  "A user can login to the app with username justgoscha+local@gmail.com and the password supersecrettestpassword123" on "zenmemo.app"
+1. **Agentic Tester** reads instructions:  "A user can login to the app with username testuser@example.com and the password password123" on "example.com"
 
-2. **Agent Tester** navigates to "zenmemo.app"
+2. **Agent Tester** navigates to "example.com"
 
 3. Agent loops start:
 
@@ -146,11 +146,11 @@ A logged-in user can logout by clicking the profile menu
 
 ```typescript
 export default {
-  baseUrl: "https://zenmemo.app",
+  baseUrl: "https://example.com",
   environments: {
-    production: { url: "https://zenmemo.app" },
-    dev: { url: "https://dev.zenmemo.app" },
-    staging: { url: "https://staging.zenmemo.app" }
+    production: { url: "https://example.com" },
+    dev: { url: "https://dev.example.com" },
+    staging: { url: "https://staging.example.com" }
   }
 }
 ```

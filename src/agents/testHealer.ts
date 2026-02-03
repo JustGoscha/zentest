@@ -1,0 +1,48 @@
+import { AgenticTester, AgenticTestResult } from "./agenticTester.js";
+import { TestBuilder } from "./testBuilder.js";
+import { Test } from "../runner/testParser.js";
+import { Page } from "playwright";
+
+/**
+ * The Test Healer runs when static Playwright tests fail.
+ * It re-runs the Agentic Tester to figure out what changed
+ * and generates a new static test.
+ */
+export class TestHealer {
+  private page: Page;
+  private baseUrl: string;
+
+  constructor(page: Page, baseUrl: string) {
+    this.page = page;
+    this.baseUrl = baseUrl;
+  }
+
+  async heal(
+    suiteName: string,
+    test: Test,
+    failureReason: string
+  ): Promise<{ success: boolean; newTestCode?: string; error?: string }> {
+    console.log(`  🔧 Healing test: ${test.name}`);
+    console.log(`     Failure: ${failureReason}`);
+
+    // Run agentic tester to figure out the new flow
+    const agenticTester = new AgenticTester(this.page, this.baseUrl);
+    const result = await agenticTester.run(test);
+
+    if (!result.success) {
+      return {
+        success: false,
+        error: `Agentic tester also failed: ${result.error}`,
+      };
+    }
+
+    // Generate new static test
+    const builder = new TestBuilder(suiteName, test.name);
+    const newTestCode = builder.generate(result.steps, test);
+
+    return {
+      success: true,
+      newTestCode,
+    };
+  }
+}
