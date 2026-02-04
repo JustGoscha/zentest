@@ -8,6 +8,14 @@ import {
   getViewportSize,
 } from "../browser/screenshot.js";
 import { ComputerUseProvider } from "../providers/index.js";
+import {
+  INDENT_LEVELS,
+  color,
+  logLine,
+  startSpinner,
+  statusLabel,
+  symbols,
+} from "../ui/cliOutput.js";
 
 export interface AgenticTestResult {
   success: boolean;
@@ -43,7 +51,7 @@ export class AgenticTester {
   private provider: ComputerUseProvider;
   private executor: BrowserExecutor;
   private options: AgenticTesterOptions;
-  private lastFailure?: { error: string; screenshot?: Buffer };
+  private lastFailure?: { error: string; screenshot?: Buffer; action?: Action };
 
   constructor(
     page: Page,
@@ -77,14 +85,24 @@ export class AgenticTester {
       // Navigate to base URL
       await this.page.goto(this.baseUrl, { waitUntil: "networkidle" });
 
-      console.log(`    Starting test: "${test.description}"`);
-      console.log(`    Using provider: ${this.provider.name}`);
+      logLine(
+        INDENT_LEVELS.step,
+        `${statusLabel("info")} Starting test: "${test.description}"`
+      );
+      logLine(
+        INDENT_LEVELS.detail,
+        `${statusLabel("info")} Using provider: ${this.provider.name}`
+      );
 
       while (steps.length < this.options.maxSteps) {
         // 1. Take screenshot
         const viewport = getViewportSize(this.page);
 
-        console.log(`    Step ${steps.length + 1}/${this.options.maxSteps}...`);
+        logLine(
+          INDENT_LEVELS.step,
+          `${symbols.step} Step ${steps.length + 1}/${this.options.maxSteps}`
+        );
+        console.log("");
 
         if (pendingActions.length === 0) {
           // 2. Ask AI for next action batch (retry on empty/invalid response)
@@ -96,15 +114,17 @@ export class AgenticTester {
           pendingActions = actions;
           pendingReasoning = reasoning;
           if (this.options.verbose) {
-            console.log(`      AI reasoning: ${pendingReasoning}`);
-            console.log(`      AI actions: ${JSON.stringify(pendingActions)}`);
+            logLine(
+              INDENT_LEVELS.detail,
+              `${color.magenta("Tool:")} ${JSON.stringify(pendingActions)}`
+            );
           }
         }
 
         const action = pendingActions.shift();
         if (!action) {
           const reason = "No actions returned from AI";
-          console.log(`    ✗ Test failed: ${reason}`);
+          logLine(INDENT_LEVELS.step, `${statusLabel("fail")} Test failed: ${reason}`);
           return {
             success: false,
             steps,
@@ -114,16 +134,22 @@ export class AgenticTester {
 
         const reasoning = pendingReasoning;
         if (this.options.verbose) {
-          console.log(`      Action: ${action.type}`);
-          console.log(`      Reasoning: ${reasoning}`);
-          console.log(`      Tool use: ${JSON.stringify(action)}`);
+          logLine(INDENT_LEVELS.detail, `${color.cyan("Action:")} ${action.type}`);
+          logLine(INDENT_LEVELS.detail, `${color.yellow("Reasoning:")} ${reasoning}`);
+          logLine(
+            INDENT_LEVELS.detail,
+            `${color.magenta("Tool:")} ${JSON.stringify(action)}`
+          );
         } else {
-          console.log(`      Action: ${action.type} - ${reasoning.slice(0, 60)}...`);
+          logLine(
+            INDENT_LEVELS.detail,
+            `${color.cyan("Action:")} ${this.formatActionSummary(action)}`
+          );
         }
 
         if (action.type !== "done" && this.isRepeatedAction(actionHistory, action, 3)) {
           const reason = "Repeated same action without progress";
-          console.log(`    ✗ Test failed: ${reason}`);
+          logLine(INDENT_LEVELS.step, `${statusLabel("fail")} Test failed: ${reason}`);
           return {
             success: false,
             steps,
@@ -134,8 +160,13 @@ export class AgenticTester {
         // 3. Check if done
         if (action.type === "done") {
           const doneAction = action as { type: "done"; success: boolean; reason: string };
-          console.log(
-            `    ${doneAction.success ? "✓" : "✗"} Test ${doneAction.success ? "passed" : "failed"}: ${doneAction.reason}`
+          logLine(
+            INDENT_LEVELS.step,
+            `${
+              doneAction.success
+                ? color.green("☑︎ TEST PASSED")
+                : color.red("☒ TEST FAILED")
+            }: ${doneAction.reason}`
           );
           return {
             success: doneAction.success,
@@ -148,7 +179,7 @@ export class AgenticTester {
         const result = await this.executor.execute(action);
 
         if (result.error) {
-          console.log(`      Error: ${result.error}`);
+          logLine(INDENT_LEVELS.detail, `${statusLabel("fail")} Error: ${result.error}`);
         }
 
         // 5. Record step
@@ -164,7 +195,11 @@ export class AgenticTester {
         actionHistory.push({ action, reasoning, error: result.error });
 
         if (result.error) {
-          this.lastFailure = { error: result.error, screenshot: result.screenshot };
+          this.lastFailure = {
+            error: result.error,
+            screenshot: result.screenshot,
+            action,
+          };
           pendingActions = [];
         }
 
@@ -172,7 +207,10 @@ export class AgenticTester {
         await this.executor.waitForStable();
       }
 
-      console.log(`    ✗ Max steps (${this.options.maxSteps}) reached`);
+      logLine(
+        INDENT_LEVELS.step,
+        `${statusLabel("fail")} Max steps (${this.options.maxSteps}) reached`
+      );
       return {
         success: false,
         steps,
@@ -180,7 +218,7 @@ export class AgenticTester {
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.log(`    ✗ Error: ${errorMessage}`);
+      logLine(INDENT_LEVELS.step, `${statusLabel("fail")} Error: ${errorMessage}`);
       return {
         success: false,
         steps,
@@ -205,30 +243,52 @@ export class AgenticTester {
     testDescription: string;
     actionHistory: ActionHistoryEntry[];
     viewport: { width: number; height: number };
-  }): Promise<{ actions: Action[]; reasoning: string }> {
+  }): Promise<{ actions: Action[]; reasoning: string; rawResponse?: string }> {
     const maxRetries = this.options.retryNoResponse ?? 0;
     let attempt = 0;
 
     while (true) {
       const screenshot =
         this.lastFailure?.screenshot || (await captureScreenshot(this.page));
+      const spinner = startSpinner(INDENT_LEVELS.detail, "sending to AI...");
+      const switchTimer = setTimeout(() => {
+        spinner.update("AI is thinking...");
+      }, 150);
+      const failureText = this.lastFailure
+        ? `${this.formatActionSummary(this.lastFailure.action ?? { type: "done", success: false, reason: "" })} failed with error: ${this.lastFailure.error}`
+        : undefined;
       const result = await this.provider.getNextAction({
         screenshot,
         testDescription: params.testDescription,
         actionHistory: params.actionHistory,
         viewport: params.viewport,
+        lastFailureText: failureText,
       });
+      clearTimeout(switchTimer);
+      spinner.update("AI is thinking...");
+      spinner.stop();
       if (this.lastFailure?.screenshot) {
         this.lastFailure = undefined;
       }
       const normalized = this.normalizeResult(result);
+      if (this.options.verbose && normalized.rawResponse) {
+        this.logRawAiResponse(normalized.rawResponse);
+      }
+      logLine(INDENT_LEVELS.detail, `${color.yellow("AI:")} ${normalized.reasoning}`);
+      logLine(
+        INDENT_LEVELS.detail,
+        `${color.magenta("Queued:")} ${normalized.actions.length} actions`
+      );
 
       if (!this.shouldRetry(normalized.actions, normalized.reasoning) || attempt >= maxRetries) {
         return normalized;
       }
 
       attempt++;
-      console.log(`      No response from AI, retrying (${attempt}/${maxRetries})...`);
+      logLine(
+        INDENT_LEVELS.detail,
+        `${statusLabel("warn")} No response from AI, retrying (${attempt}/${maxRetries})...`
+      );
     }
   }
 
@@ -248,7 +308,8 @@ export class AgenticTester {
   private normalizeResult(result: {
     actions?: Action[];
     reasoning: string;
-  }): { actions: Action[]; reasoning: string } {
+    rawResponse?: string;
+  }): { actions: Action[]; reasoning: string; rawResponse?: string } {
     const fallback: Action = {
       type: "done",
       success: false,
@@ -260,8 +321,22 @@ export class AgenticTester {
     return {
       actions: doneIndex >= 0 ? actions.slice(0, doneIndex + 1) : actions,
       reasoning: result.reasoning,
+      rawResponse: result.rawResponse,
     };
   }
+
+  private logRawAiResponse(raw: string): void {
+    logLine(INDENT_LEVELS.detail, `${color.gray("AI raw response:")}`);
+    this.logMultiline(INDENT_LEVELS.detail, raw);
+  }
+
+  private logMultiline(level: number, text: string): void {
+    const lines = text.split("\n");
+    for (const line of lines) {
+      logLine(level, line);
+    }
+  }
+
 
   private isRepeatedAction(
     actionHistory: Array<{ action: Action; reasoning: string }>,
@@ -294,6 +369,44 @@ export class AgenticTester {
         return `${action.type}:${action.success}:${action.reason}`;
       default:
         return `${action.type}`;
+    }
+  }
+
+  private formatActionSummary(action: Action): string {
+    const truncate = (value: string, max = 60) => {
+      const singleLine = value.replace(/\s+/g, " ").trim();
+      return singleLine.length > max ? `${singleLine.slice(0, max - 1)}…` : singleLine;
+    };
+
+    switch (action.type) {
+      case "click":
+        return `click at (${action.x}, ${action.y})${action.button ? ` [${action.button}]` : ""}`;
+      case "double_click":
+        return `double click at (${action.x}, ${action.y})`;
+      case "mouse_move":
+        return `move mouse to (${action.x}, ${action.y})`;
+      case "mouse_down":
+        return `mouse down at (${action.x}, ${action.y})${action.button ? ` [${action.button}]` : ""}`;
+      case "mouse_up":
+        return `mouse up at (${action.x}, ${action.y})${action.button ? ` [${action.button}]` : ""}`;
+      case "drag":
+        return `drag from (${action.startX}, ${action.startY}) to (${action.endX}, ${action.endY})`;
+      case "click_button":
+        return `click button "${truncate(action.name, 40)}"${action.exact === false ? " [fuzzy]" : ""}`;
+      case "type":
+        return `type "${truncate(action.text, 40)}"`;
+      case "key":
+        return `press key "${action.key}"`;
+      case "scroll":
+        return `scroll ${action.direction} ${action.amount ?? 100}px at (${action.x}, ${action.y})`;
+      case "wait":
+        return `wait ${action.ms}ms`;
+      case "screenshot":
+        return "capture screenshot";
+      case "done":
+        return `done (${action.success ? "success" : "failure"})`;
+      default:
+        return "unknown action";
     }
   }
 }

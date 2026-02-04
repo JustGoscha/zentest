@@ -34,7 +34,8 @@ export class OpenRouterProvider implements ComputerUseProvider {
   }
 
   async getNextAction(params: GetNextActionParams): Promise<GetNextActionResult> {
-    const { screenshot, testDescription, actionHistory, viewport } = params;
+    const { screenshot, testDescription, actionHistory, viewport, lastFailureText } =
+      params;
 
     const systemPrompt = buildSystemPrompt({
       testDescription,
@@ -45,7 +46,7 @@ export class OpenRouterProvider implements ComputerUseProvider {
 
     const response = await this.client.chat.completions.create({
       model: this.model,
-      max_tokens: 1024,
+      max_tokens: 5000,
       response_format: { type: "json_object" },
       messages: [
         { role: "system", content: systemPrompt },
@@ -60,7 +61,11 @@ export class OpenRouterProvider implements ComputerUseProvider {
             },
             {
               type: "text",
-              text: "What action should I take next to complete the test? Respond with JSON.",
+              text: `${
+                lastFailureText
+                  ? `Last instruction failed: ${lastFailureText}. Try a different action.\n\n`
+                  : ""
+              }Did we complete the test? If not, what action should I take next to complete the test? Respond with JSON.`,
             },
           ],
         },
@@ -91,6 +96,7 @@ export class OpenRouterProvider implements ComputerUseProvider {
         return {
           actions: parsed.actions.map((action) => this.validateAction(action)),
           reasoning,
+          rawResponse: content,
         };
       }
       const doneAction: Action = {
@@ -101,22 +107,53 @@ export class OpenRouterProvider implements ComputerUseProvider {
       return {
         actions: [doneAction],
         reasoning,
+        rawResponse: content,
       };
     };
 
-    const extractJsonObject = (input: string): string | null => {
-      const firstBrace = input.indexOf("{");
-      const lastBrace = input.lastIndexOf("}");
-      if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
-        return null;
+    const extractBestJsonObject = (input: string): string | null => {
+      const fenced = input.match(/```(?:json)?\s*([\s\S]*?)```/i);
+      if (fenced && fenced[1]) {
+        const candidate = fenced[1].trim();
+        if (candidate.startsWith("{") && candidate.endsWith("}")) {
+          return candidate;
+        }
       }
-      return input.slice(firstBrace, lastBrace + 1);
+
+      const candidates: Array<{ text: string; parsed: unknown }> = [];
+      const stack: number[] = [];
+      for (let i = 0; i < input.length; i++) {
+        const ch = input[i];
+        if (ch === "{") {
+          stack.push(i);
+        } else if (ch === "}" && stack.length > 0) {
+          const start = stack.pop()!;
+          const candidate = input.slice(start, i + 1);
+          try {
+            const parsed = JSON.parse(candidate);
+            if (parsed && typeof parsed === "object") {
+              candidates.push({ text: candidate, parsed });
+            }
+          } catch {
+            // keep searching for a valid JSON object
+          }
+        }
+      }
+
+      if (candidates.length === 0) return null;
+      const withActions = candidates.filter((item) => {
+        const parsed = item.parsed as { actions?: unknown };
+        return Array.isArray(parsed.actions);
+      });
+      const pool = withActions.length > 0 ? withActions : candidates;
+      pool.sort((a, b) => b.text.length - a.text.length);
+      return pool[0].text;
     };
 
     try {
       return tryParse(content);
     } catch {
-      const extracted = extractJsonObject(content);
+      const extracted = extractBestJsonObject(content);
       if (extracted) {
         try {
           return tryParse(extracted);
@@ -132,6 +169,7 @@ export class OpenRouterProvider implements ComputerUseProvider {
       return {
         actions: [doneAction],
         reasoning: "Failed to parse AI response",
+        rawResponse: content,
       };
     }
   }

@@ -2,6 +2,53 @@ import { Page } from "playwright";
 import { Action, ActionResult, ElementInfo } from "../types/actions.js";
 import { captureScreenshot } from "./screenshot.js";
 
+const normalizeKeyCombo = (rawKey: string): string => {
+  const trimmed = rawKey.trim();
+  if (!trimmed) return "Enter";
+
+  const hasPlus = trimmed.includes("+");
+  const hasDashModifiers = /(^|[-])(cmd|command|meta|ctrl|control|alt|option|shift)-/i.test(
+    trimmed
+  );
+  const delimiter = hasPlus ? "+" : hasDashModifiers ? "-" : null;
+  const parts = delimiter ? trimmed.split(delimiter) : [trimmed];
+
+  const normalized = parts
+    .map((part) => {
+      const token = part.trim();
+      if (!token) return "";
+      const lower = token.toLowerCase();
+      switch (lower) {
+        case "cmd":
+        case "command":
+        case "meta":
+          return "Meta";
+        case "ctrl":
+        case "control":
+          return "Control";
+        case "alt":
+        case "option":
+          return "Alt";
+        case "shift":
+          return "Shift";
+        case "esc":
+          return "Escape";
+        case "return":
+          return "Enter";
+        case "space":
+        case "spacebar":
+          return "Space";
+        case "del":
+          return "Delete";
+        default:
+          return token.length === 1 ? token.toUpperCase() : token;
+      }
+    })
+    .filter(Boolean);
+
+  return normalized.join("+") || "Enter";
+};
+
 /**
  * Executes actions via Playwright and returns results with element info
  */
@@ -10,6 +57,7 @@ export class BrowserExecutor {
 
   constructor(page: Page) {
     this.page = page;
+    this.page.setDefaultTimeout(5000);
   }
 
   /**
@@ -85,7 +133,7 @@ export class BrowserExecutor {
           break;
 
         case "key":
-          await this.page.keyboard.press(action.key);
+          await this.page.keyboard.press(normalizeKeyCombo(action.key));
           break;
 
         case "scroll": {

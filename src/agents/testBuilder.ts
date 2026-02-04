@@ -67,7 +67,9 @@ export class TestBuilder {
         return `await ${selector}.fill('${this.escapeString(step.value || "")}');`;
 
       case "key":
-        return `await page.keyboard.press('${step.value || "Enter"}');`;
+        return `await page.keyboard.press('${this.normalizeKeyCombo(
+          step.value || "Enter"
+        )}');`;
 
       case "scroll":
         return `await page.mouse.wheel(0, ${step.value || "100"});`;
@@ -135,6 +137,52 @@ export class TestBuilder {
 
     // Fallback to locator for CSS selectors
     return `page.locator('${this.escapeString(selector)}')`;
+  }
+
+  private normalizeKeyCombo(rawKey: string): string {
+    const trimmed = rawKey.trim();
+    if (!trimmed) return "Enter";
+
+    const hasPlus = trimmed.includes("+");
+    const hasDashModifiers =
+      /(^|[-])(cmd|command|meta|ctrl|control|alt|option|shift)-/i.test(trimmed);
+    const delimiter = hasPlus ? "+" : hasDashModifiers ? "-" : null;
+    const parts = delimiter ? trimmed.split(delimiter) : [trimmed];
+
+    const normalized = parts
+      .map((part) => {
+        const token = part.trim();
+        if (!token) return "";
+        const lower = token.toLowerCase();
+        switch (lower) {
+          case "cmd":
+          case "command":
+          case "meta":
+            return "Meta";
+          case "ctrl":
+          case "control":
+            return "Control";
+          case "alt":
+          case "option":
+            return "Alt";
+          case "shift":
+            return "Shift";
+          case "esc":
+            return "Escape";
+          case "return":
+            return "Enter";
+          case "space":
+          case "spacebar":
+            return "Space";
+          case "del":
+            return "Delete";
+          default:
+            return token.length === 1 ? token.toUpperCase() : token;
+        }
+      })
+      .filter(Boolean);
+
+    return normalized.join("+") || "Enter";
   }
 
   /**

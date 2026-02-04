@@ -12,6 +12,8 @@ export interface GetNextActionParams {
   actionHistory: ActionHistoryEntry[];
   /** Current viewport dimensions */
   viewport: { width: number; height: number };
+  /** Optional context for last failed instruction */
+  lastFailureText?: string;
 }
 
 /**
@@ -22,6 +24,8 @@ export interface GetNextActionResult {
   actions: Action[];
   /** The AI's reasoning for this action */
   reasoning: string;
+  /** Raw response text from the provider (verbatim) */
+  rawResponse?: string;
 }
 
 /**

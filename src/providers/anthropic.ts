@@ -27,7 +27,8 @@ export class AnthropicProvider implements ComputerUseProvider {
   }
 
   async getNextAction(params: GetNextActionParams): Promise<GetNextActionResult> {
-    const { screenshot, testDescription, actionHistory, viewport } = params;
+    const { screenshot, testDescription, actionHistory, viewport, lastFailureText } =
+      params;
 
     const systemPrompt = buildSystemPrompt({
       testDescription,
@@ -54,7 +55,11 @@ export class AnthropicProvider implements ComputerUseProvider {
             },
             {
               type: "text",
-              text: "What action should I take next to complete the test? Respond with JSON.",
+              text: `${
+                lastFailureText
+                  ? `Last instruction failed: ${lastFailureText}. Try a different action.\n\n`
+                  : ""
+              }Did we complete the test? If not, what action should I take next to complete the test? Respond with JSON.`,
             },
           ],
         },
@@ -76,8 +81,8 @@ export class AnthropicProvider implements ComputerUseProvider {
       };
     }
 
-    try {
-      const parsed = JSON.parse(content) as {
+    const tryParse = (input: string): GetNextActionResult => {
+      const parsed = JSON.parse(input) as {
         actions?: Action[];
         reasoning?: string;
       };
@@ -86,13 +91,66 @@ export class AnthropicProvider implements ComputerUseProvider {
         return {
           actions: parsed.actions.map((action) => this.validateAction(action)),
           reasoning,
+          rawResponse: content,
         };
       }
       return {
         actions: [{ type: "done", success: false, reason: "No actions returned" }],
         reasoning,
+        rawResponse: content,
       };
+    };
+
+    const extractBestJsonObject = (input: string): string | null => {
+      const fenced = input.match(/```(?:json)?\s*([\s\S]*?)```/i);
+      if (fenced && fenced[1]) {
+        const candidate = fenced[1].trim();
+        if (candidate.startsWith("{") && candidate.endsWith("}")) {
+          return candidate;
+        }
+      }
+
+      const candidates: Array<{ text: string; parsed: unknown }> = [];
+      const stack: number[] = [];
+      for (let i = 0; i < input.length; i++) {
+        const ch = input[i];
+        if (ch === "{") {
+          stack.push(i);
+        } else if (ch === "}" && stack.length > 0) {
+          const start = stack.pop()!;
+          const candidate = input.slice(start, i + 1);
+          try {
+            const parsed = JSON.parse(candidate);
+            if (parsed && typeof parsed === "object") {
+              candidates.push({ text: candidate, parsed });
+            }
+          } catch {
+            // keep searching for a valid JSON object
+          }
+        }
+      }
+
+      if (candidates.length === 0) return null;
+      const withActions = candidates.filter((item) => {
+        const parsed = item.parsed as { actions?: unknown };
+        return Array.isArray(parsed.actions);
+      });
+      const pool = withActions.length > 0 ? withActions : candidates;
+      pool.sort((a, b) => b.text.length - a.text.length);
+      return pool[0].text;
+    };
+
+    try {
+      return tryParse(content);
     } catch {
+      const extracted = extractBestJsonObject(content);
+      if (extracted) {
+        try {
+          return tryParse(extracted);
+        } catch {
+          // fall through
+        }
+      }
       return {
         actions: [
           {
@@ -102,6 +160,7 @@ export class AnthropicProvider implements ComputerUseProvider {
           },
         ],
         reasoning: "Failed to parse AI response",
+        rawResponse: content,
       };
     }
   }

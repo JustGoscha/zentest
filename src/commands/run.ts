@@ -11,6 +11,14 @@ import {
 import { createProvider, ComputerUseProvider } from "../providers/index.js";
 import { AgenticTester } from "../agents/agenticTester.js";
 import { TestBuilder } from "../agents/testBuilder.js";
+import {
+  INDENT_LEVELS,
+  color,
+  formatSuiteHeader,
+  formatTestHeader,
+  logLine,
+  statusLabel,
+} from "../ui/cliOutput.js";
 
 interface RunOptions {
   agentic?: boolean;
@@ -41,17 +49,18 @@ export async function run(suite: string | undefined, options: RunOptions) {
     process.exit(1);
   }
 
-  console.log(`Running tests against: ${envUrl}`);
-  console.log(`Provider: ${config.provider}`);
-  console.log(`Models:`);
-  console.log(`  - Agentic: ${config.models.agenticModel}`);
-  console.log(`  - Builder: ${config.models.builderModel}`);
-  console.log(`  - Healer:  ${config.models.healerModel}`);
+  logLine(INDENT_LEVELS.suite, color.bold("Zentest Runner"));
+  logLine(INDENT_LEVELS.suite, `${statusLabel("info")} Target: ${envUrl}`);
+  logLine(INDENT_LEVELS.suite, `${statusLabel("info")} Provider: ${config.provider}`);
+  logLine(INDENT_LEVELS.suite, `${statusLabel("info")} Models:`);
+  logLine(INDENT_LEVELS.suite, `  - Agentic: ${config.models.agenticModel}`);
+  logLine(INDENT_LEVELS.suite, `  - Builder: ${config.models.builderModel}`);
+  logLine(INDENT_LEVELS.suite, `  - Healer:  ${config.models.healerModel}`);
   if (options.agentic) {
-    console.log("Mode: Agentic (forced)");
+    logLine(INDENT_LEVELS.suite, `${statusLabel("warn")} Mode: Agentic (forced)`);
   }
   if (options.verbose) {
-    console.log("Verbose: on");
+    logLine(INDENT_LEVELS.suite, `${statusLabel("info")} Verbose: on`);
   }
   console.log("");
 
@@ -65,7 +74,10 @@ export async function run(suite: string | undefined, options: RunOptions) {
     headless = shouldRunHeadless(config);
   }
 
-  console.log(`Browser: ${headless ? "headless" : "visible"}`);
+  logLine(
+    INDENT_LEVELS.suite,
+    `${statusLabel("info")} Browser: ${headless ? "headless" : "visible"}`
+  );
 
   // Create provider for agentic tester
   const apiKey = getApiKey(config);
@@ -130,14 +142,16 @@ async function runTestFile(
   const testSuite = parseTestFile(filePath);
   const suiteName = path.basename(filePath, ".md");
 
-  console.log(`\n━━━ ${testSuite.name} ━━━`);
+  console.log("");
+  logLine(INDENT_LEVELS.suite, formatSuiteHeader(testSuite.name));
 
   let passed = 0;
   let failed = 0;
 
   for (const test of testSuite.tests) {
-    console.log(`\n  ▶ ${test.name}`);
-    console.log(`    "${test.description}"`);
+    console.log("");
+    logLine(INDENT_LEVELS.test, formatTestHeader(test.name));
+    logLine(INDENT_LEVELS.step, color.dim(`"${test.description}"`));
 
     // Check if static test exists
     const staticTestPath = path.join(
@@ -179,7 +193,10 @@ async function runTestFile(
 
           // Write static test
           fs.writeFileSync(staticTestPath, testCode);
-          console.log(`    📝 Generated static test: ${staticTestPath}`);
+        logLine(
+          INDENT_LEVELS.step,
+          `${statusLabel("check")} Generated static test: ${staticTestPath}`
+        );
         } else {
           failed++;
         }
@@ -188,10 +205,19 @@ async function runTestFile(
       }
     } else {
       // TODO: Run static test first
-      console.log(`    ⏭️  Static test exists, skipping agentic (use --agentic to force)`);
+    logLine(
+      INDENT_LEVELS.step,
+      `${statusLabel("warn")} Static test exists, skipping agentic (use --agentic to force)`
+    );
       passed++; // Assume static tests pass for now
     }
   }
 
-  console.log(`\n  Summary: ${passed} passed, ${failed} failed`);
+  const passedText = color.green(String(passed));
+  const failedText = failed > 0 ? color.red(String(failed)) : color.gray(String(failed));
+  console.log("");
+  logLine(
+    INDENT_LEVELS.test,
+    `${statusLabel(failed > 0 ? "fail" : "check")} Summary: ${passedText} passed, ${failedText} failed`
+  );
 }
