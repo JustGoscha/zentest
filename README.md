@@ -4,6 +4,8 @@ Zentest is QA end-2-end testing tool that works entirely decoupled from your app
 
 Tests are defined in your language. And executed without writing any code (yourself). You don't even need access to the codebase of apps you want to test.
 
+<img width="1024" height="934" alt="image" src="https://github.com/user-attachments/assets/54cd4fe0-91ed-4a5c-bf36-11e4224acf69" />
+
 ## How it works
 
 ### Your first app test
