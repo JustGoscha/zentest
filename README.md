@@ -15,7 +15,7 @@ Tests are defined in your language. And executed without writing any code (yours
 - enter website: example.com
 - environment: production
 + add environment -> you can add different environments for dev / testing / staging / beta
-    - website: https://omg--listen-to-this.netlify.live/
+    - website: dev.example.com
     - environment: dev
 
 2. You write a test in plain English:
