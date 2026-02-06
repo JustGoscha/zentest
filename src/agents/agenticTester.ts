@@ -1,6 +1,6 @@
 import { Page } from "playwright";
 import { Test } from "../runner/testParser.js";
-import { Action, ActionHistoryEntry, RecordedStep } from "../types/actions.js";
+import { Action, ActionHistoryEntry, RecordedStep, ElementInfo } from "../types/actions.js";
 import { BrowserExecutor } from "../browser/executor.js";
 import {
   captureScreenshot,
@@ -144,11 +144,6 @@ export class AgenticTester {
             INDENT_LEVELS.detail,
             `${color.magenta("Tool:")} ${JSON.stringify(action)}`
           );
-        } else {
-          logLine(
-            INDENT_LEVELS.detail,
-            `${color.cyan("Action:")} ${this.formatActionSummary(action)}`
-          );
         }
 
         if (action.type !== "done" && this.isRepeatedAction(actionHistory, action, 3)) {
@@ -183,6 +178,14 @@ export class AgenticTester {
 
         // 4. Execute action
         const result = await this.executor.execute(action);
+
+        // Log action summary (with element info if available)
+        if (!this.options.verbose) {
+          logLine(
+            INDENT_LEVELS.detail,
+            `${color.cyan("Action:")} ${this.formatActionSummary(action, result.elementInfo)}`
+          );
+        }
 
         if (result.error) {
           logLine(INDENT_LEVELS.detail, `${statusLabel("fail")} Error: ${result.error}`);
@@ -417,17 +420,42 @@ export class AgenticTester {
     }
   }
 
-  private formatActionSummary(action: Action): string {
+  private formatActionSummary(action: Action, elementInfo?: ElementInfo): string {
     const truncate = (value: string, max = 60) => {
       const singleLine = value.replace(/\s+/g, " ").trim();
       return singleLine.length > max ? `${singleLine.slice(0, max - 1)}…` : singleLine;
     };
 
+    const getElementDescription = (info?: ElementInfo): string => {
+      if (!info) return "";
+      
+      const parts: string[] = [];
+      
+      // Special handling for inputs: show label or placeholder, then input type
+      if (info.tagName === "input" || info.tagName === "textarea") {
+        const label = info.name || info.ariaLabel || info.placeholder;
+        if (label) {
+          parts.push(`"${truncate(label, 40)}"`);
+        }
+        const elementType = info.role || info.tagName || "input";
+        parts.push(elementType);
+      } else {
+        // For other elements: show text if available, then element type
+        if (info.text) {
+          parts.push(`"${truncate(info.text, 40)}"`);
+        }
+        const elementType = info.role || info.tagName || "element";
+        parts.push(elementType);
+      }
+      
+      return parts.length > 0 ? ` on ${parts.join(" ")}` : "";
+    };
+
     switch (action.type) {
       case "click":
-        return `click at (${action.x}, ${action.y})${action.button ? ` [${action.button}]` : ""}`;
+        return `click at (${action.x}, ${action.y})${getElementDescription(elementInfo)}${action.button ? ` [${action.button}]` : ""}`;
       case "double_click":
-        return `double click at (${action.x}, ${action.y})`;
+        return `double click at (${action.x}, ${action.y})${getElementDescription(elementInfo)}`;
       case "mouse_move":
         return `move mouse to (${action.x}, ${action.y})`;
       case "mouse_down":

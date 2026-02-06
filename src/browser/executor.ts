@@ -240,6 +240,43 @@ export class BrowserExecutor {
           const element = document.elementFromPoint(x, y);
           if (!element) return null;
 
+          // Get associated label text for inputs
+          const getLabelText = (el: Element): string | undefined => {
+            // Check aria-label first
+            const ariaLabel = el.getAttribute("aria-label");
+            if (ariaLabel) return ariaLabel;
+
+            // Check for associated label element via 'for' attribute
+            if (el.id) {
+              const label = document.querySelector(`label[for="${el.id}"]`);
+              if (label) {
+                const labelText = label.textContent?.trim();
+                if (labelText) return labelText;
+              }
+            }
+
+            // Check for wrapping label element
+            const parentLabel = el.closest("label");
+            if (parentLabel) {
+              const labelText = parentLabel.textContent?.trim();
+              if (labelText) return labelText;
+            }
+
+            // Check name attribute
+            const nameAttr = el.getAttribute("name");
+            if (nameAttr) return nameAttr;
+
+            // For inputs/textareas, fall back to placeholder
+            if (
+              el instanceof HTMLInputElement ||
+              el instanceof HTMLTextAreaElement
+            ) {
+              if (el.placeholder) return el.placeholder;
+            }
+
+            return undefined;
+          };
+
           // Build the best selector for this element
           const buildSelector = (el: Element): string => {
             // Priority: data-testid, id, role+name, class+tag
@@ -278,14 +315,13 @@ export class BrowserExecutor {
             return tagName;
           };
 
+          const labelText = getLabelText(element);
+
           return {
             tagName: element.tagName.toLowerCase(),
             text: element.textContent?.trim().slice(0, 100),
             role: element.getAttribute("role") || undefined,
-            name:
-              element.getAttribute("aria-label") ||
-              element.getAttribute("name") ||
-              undefined,
+            name: labelText,
             id: element.id || undefined,
             className:
               typeof element.className === "string"
@@ -433,9 +469,48 @@ export class BrowserExecutor {
         const element = findBestElement();
         if (!element) return null;
 
+        // Get associated label text for inputs
+        const getLabelText = (el: Element): string | undefined => {
+          // Check aria-label first
+          const ariaLabel = el.getAttribute("aria-label");
+          if (ariaLabel) return ariaLabel;
+
+          // Check for associated label element via 'for' attribute
+          if (el.id) {
+            const label = document.querySelector(`label[for="${el.id}"]`);
+            if (label) {
+              const labelText = label.textContent?.trim();
+              if (labelText) return labelText;
+            }
+          }
+
+          // Check for wrapping label element
+          const parentLabel = el.closest("label");
+          if (parentLabel) {
+            const labelText = parentLabel.textContent?.trim();
+            if (labelText) return labelText;
+          }
+
+          // Check name attribute
+          const nameAttr = el.getAttribute("name");
+          if (nameAttr) return nameAttr;
+
+          // For inputs/textareas, fall back to placeholder
+          if (
+            el instanceof HTMLInputElement ||
+            el instanceof HTMLTextAreaElement
+          ) {
+            if (el.placeholder) return el.placeholder;
+          }
+
+          return undefined;
+        };
+
         const rect = element.getBoundingClientRect();
         const centerX = rect.left + rect.width / 2;
         const centerY = rect.top + rect.height / 2;
+
+        const labelText = getLabelText(element);
 
         return {
           x: centerX,
@@ -444,10 +519,7 @@ export class BrowserExecutor {
             tagName: element.tagName.toLowerCase(),
             text: element.textContent?.trim().slice(0, 100),
             role: element.getAttribute("role") || undefined,
-            name:
-              element.getAttribute("aria-label") ||
-              element.getAttribute("name") ||
-              undefined,
+            name: labelText,
             id: (element as HTMLElement).id || undefined,
             className:
               typeof (element as HTMLElement).className === "string"

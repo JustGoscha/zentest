@@ -109,7 +109,9 @@ export class TestBuilder {
       }
 
       case "click_button": {
-        return `await page.getByRole('button', { name: '${this.escapeString(step.action.name)}', exact: ${step.action.exact ?? true} }).click();`;
+        // Use getByRole with name parameter - name uses accessible name (button text content)
+        // Always use exact: true to avoid matching multiple buttons with similar text
+        return `await page.getByRole('button', { name: '${this.escapeString(step.action.name)}', exact: true }).click();`;
       }
 
       case "double_click": {
@@ -173,7 +175,8 @@ export class TestBuilder {
 
   /**
    * Build the smartest Playwright locator from ElementInfo
-   * Priority: data-testid > role+name > label > placeholder > text > id > selector
+   * Priority: data-testid > role+name > label > placeholder > text > id
+   * NEVER use CSS selectors for inputs/buttons - always use getByRole/getByLabel/getByPlaceholder
    */
   private buildLocator(info: ElementInfo | undefined, action: Action): string | null {
     if (!info) {
@@ -186,40 +189,61 @@ export class TestBuilder {
       return `page.getByTestId('${testIdMatch[1]}')`;
     }
 
-    // 2. role + accessible name - Playwright's recommended approach
+    // 2. For inputs and textareas: ALWAYS use getByRole/getByLabel/getByPlaceholder, never CSS selectors
+    if (info.tagName === "input" || info.tagName === "textarea") {
+      const role = info.role || this.inferRoleFromTagName(info.tagName);
+      
+      // Try getByRole with accessible name (from label, aria-label, or placeholder)
+      if (role) {
+        const accessibleName = info.ariaLabel || info.name || info.placeholder || null;
+        if (accessibleName) {
+          return `page.getByRole('${role}', { name: '${this.escapeString(accessibleName)}', exact: true })`;
+        }
+      }
+      
+      // Try getByLabel (uses associated label text)
+      if (info.name) {
+        return `page.getByLabel('${this.escapeString(info.name)}')`;
+      }
+      
+      // Try getByPlaceholder
+      if (info.placeholder) {
+        return `page.getByPlaceholder('${this.escapeString(info.placeholder)}')`;
+      }
+      
+      // Last resort: getByRole without name (less ideal but still semantic)
+      if (role) {
+        return `page.getByRole('${role}')`;
+      }
+      
+      // If we can't infer role, return null rather than using CSS selector
+      return null;
+    }
+
+    // 3. role + accessible name - Playwright's recommended approach for other elements
+    // name uses accessible name which is the button's text content (when no aria-label)
     const role = info.role || this.inferRoleFromTagName(info.tagName);
     if (role) {
-      const accessibleName = info.ariaLabel || info.name || this.getShortText(info.text);
+      const accessibleName = info.ariaLabel || info.name || info.text || null;
       if (accessibleName) {
-        return `page.getByRole('${role}', { name: '${this.escapeString(accessibleName)}' })`;
+        // Use exact: true to avoid matching multiple elements with similar text
+        return `page.getByRole('${role}', { name: '${this.escapeString(accessibleName)}', exact: true })`;
       }
     }
 
-    // 3. label (for form inputs)
-    if ((info.tagName === "input" || info.tagName === "textarea") && info.name) {
-      return `page.getByLabel('${this.escapeString(info.name)}')`;
+    // 4. text content - for non-interactive elements or when no better option
+    if (info.text) {
+      return `page.getByText('${this.escapeString(info.text)}', { exact: true })`;
     }
 
-    // 4. placeholder (for inputs)
-    if ((info.tagName === "input" || info.tagName === "textarea") && info.placeholder) {
-      return `page.getByPlaceholder('${this.escapeString(info.placeholder)}')`;
-    }
-
-    // 5. text content - for non-interactive elements or when no better option
-    if (info.text && info.text.trim()) {
-      const shortText = this.getShortText(info.text);
-      if (shortText) {
-        return `page.getByText('${this.escapeString(shortText)}', { exact: false })`;
-      }
-    }
-
-    // 6. id - stable but not semantic
+    // 5. id - stable but not semantic (only for non-input elements)
     if (info.id) {
       return `page.locator('#${info.id}')`;
     }
 
-    // 7. Fallback to selector string if it's not generic
-    if (info.selector && !this.isGenericSelector(info.selector)) {
+    // 6. Never fall back to CSS selectors for inputs/buttons
+    // For other elements, only use selector if it's not generic
+    if (info.tagName !== "input" && info.tagName !== "button" && info.selector && !this.isGenericSelector(info.selector)) {
       return `page.locator('${this.escapeString(info.selector)}')`;
     }
 
@@ -237,8 +261,9 @@ export class TestBuilder {
       case "a":
         return "link";
       case "input":
-        // Can't infer input type without more info, but role might be set on ElementInfo
-        return null;
+        // Default to textbox for inputs (most common case)
+        // Specific types (checkbox, radio) should be set via info.role
+        return "textbox";
       case "textarea":
         return "textbox";
       case "select":
@@ -254,22 +279,6 @@ export class TestBuilder {
     }
   }
 
-  /**
-   * Get short text for use in accessible name (max 50 chars)
-   */
-  private getShortText(text: string | undefined): string | null {
-    if (!text) return null;
-    const trimmed = text.trim();
-    if (trimmed.length === 0) return null;
-    // Use first 50 chars, but try to break at word boundary
-    if (trimmed.length <= 50) return trimmed;
-    const shortened = trimmed.slice(0, 50);
-    const lastSpace = shortened.lastIndexOf(" ");
-    if (lastSpace > 30) {
-      return shortened.slice(0, lastSpace);
-    }
-    return shortened;
-  }
 
   /**
    * Check if selector is a generic tag name (not useful as locator)
