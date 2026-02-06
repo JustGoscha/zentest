@@ -80,7 +80,7 @@ export interface ElementInfo {
   href?: string;
   placeholder?: string;
   ariaLabel?: string;
-  selector: string; // Best selector for this element
+  selector: string;
 }
 
 /**

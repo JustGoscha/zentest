@@ -59,10 +59,9 @@ export class TestHealer {
       };
     }
 
-    // Generate new static test using legacy steps format
-    const legacySteps = AgenticTester.toLegacySteps(result.steps);
+    // Generate new static test
     const builder = new TestBuilder(suiteName, test.name);
-    const newTestCode = builder.generate(legacySteps, test);
+    const newTestCode = builder.generate(result.steps, test);
 
     return {
       success: true,

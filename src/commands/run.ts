@@ -216,9 +216,8 @@ async function runTestFile(
           passed++;
 
           // Generate static test on success
-          const legacySteps = AgenticTester.toLegacySteps(result.steps);
           const builder = new TestBuilder(suiteName, test.name);
-          const testCode = builder.generate(legacySteps, test);
+          const testCode = builder.generate(result.steps, test);
 
           // Ensure static-tests directory exists
           const staticTestsDir = path.join(path.dirname(filePath), "static-tests");

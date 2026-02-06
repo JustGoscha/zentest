@@ -26,14 +26,6 @@ export interface AgenticTestResult {
   message?: string;
 }
 
-// Keep legacy interface for backward compatibility
-export interface AgenticStep {
-  action: string;
-  selector?: string;
-  value?: string;
-  screenshot?: string;
-  reasoning: string;
-}
 
 export interface AgenticTesterOptions {
   maxSteps: number;
@@ -244,26 +236,6 @@ export class AgenticTester {
     }
   }
 
-  /**
-   * Convert RecordedSteps to legacy AgenticSteps for TestBuilder compatibility
-   */
-  static toLegacySteps(steps: RecordedStep[]): AgenticStep[] {
-    return steps.map((step) => ({
-      action: step.action.type,
-      selector: step.elementInfo?.selector,
-      value:
-        "text" in step.action
-          ? (step.action as { text: string }).text
-          : step.action.type === "assert_visible"
-            ? step.elementInfo?.text ||
-              step.elementInfo?.ariaLabel ||
-              step.elementInfo?.name ||
-              step.elementInfo?.placeholder ||
-              undefined
-            : undefined,
-      reasoning: step.reasoning,
-    }));
-  }
 
   private async getNextActionWithRetry(params: {
     testDescription: string;

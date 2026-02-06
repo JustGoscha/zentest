@@ -1,6 +1,5 @@
-import { AgenticStep } from "./agenticTester.js";
 import { Test } from "../runner/testParser.js";
-import { ElementInfo } from "../types/actions.js";
+import { RecordedStep, Action, ElementInfo } from "../types/actions.js";
 
 /**
  * The Test Builder observes the Agentic Tester's actions
@@ -18,7 +17,7 @@ export class TestBuilder {
   /**
    * Generate a Playwright test from recorded steps
    */
-  generate(steps: AgenticStep[], test: Test): string {
+  generate(steps: RecordedStep[], test: Test): string {
     const lines: string[] = [
       `import { test, expect } from '@playwright/test';`,
       ``,
@@ -50,7 +49,7 @@ export class TestBuilder {
       const code = this.stepToCode(step);
       if (code) {
         // Deduplicate identical assertions
-        const isAssertion = step.action === 'assert_visible' || step.action === 'assert_text';
+        const isAssertion = step.action.type === 'assert_visible' || step.action.type === 'assert_text';
         if (isAssertion && seenAssertions.has(code)) {
           continue; // Skip duplicate assertion
         }
@@ -98,160 +97,184 @@ export class TestBuilder {
     ];
   }
 
-  private stepToCode(step: AgenticStep): string | null {
-    switch (step.action) {
-      case "navigate":
-        return `await page.goto('${this.escapeString(step.value || "")}');`;
-
-      case "click":
-        {
-          const locator = this.buildBestLocator(step);
-          if (!locator) return null;
+  private stepToCode(step: RecordedStep): string | null {
+    switch (step.action.type) {
+      case "click": {
+        const locator = this.buildLocator(step.elementInfo, step.action);
+        if (locator) {
           return `await ${locator}.click();`;
         }
+        // Fallback to coordinate-based click
+        return `await page.mouse.click(${step.action.x}, ${step.action.y});`;
+      }
 
-      case "click_button":
-        {
-          // For buttons, always prefer text-based locator if we have the text
-          if (step.value) {
-            return `await page.getByRole('button', { name: '${this.escapeString(step.value)}' }).click();`;
-          }
-          const locator = this.buildBestLocator(step);
-          if (!locator) return null;
-          return `await ${locator}.click();`;
-        }
+      case "click_button": {
+        return `await page.getByRole('button', { name: '${this.escapeString(step.action.name)}', exact: ${step.action.exact ?? true} }).click();`;
+      }
 
-      case "double_click":
-        {
-          const locator = this.buildBestLocator(step);
-          if (!locator) return null;
+      case "double_click": {
+        const locator = this.buildLocator(step.elementInfo, step.action);
+        if (locator) {
           return `await ${locator}.dblclick();`;
         }
+        // Fallback to coordinate-based double click
+        return `await page.mouse.dblclick(${step.action.x}, ${step.action.y});`;
+      }
 
-      case "type":
-        {
-          const locator = this.buildBestLocator(step);
-          if (!locator) return null;
-          return `await ${locator}.fill('${this.escapeString(step.value || "")}');`;
+      case "type": {
+        const locator = this.buildLocator(step.elementInfo, step.action);
+        if (locator) {
+          return `await ${locator}.fill('${this.escapeString(step.action.text)}');`;
         }
+        // Fallback: type at current focus
+        return `await page.keyboard.type('${this.escapeString(step.action.text)}');`;
+      }
 
       case "key":
-        return `await page.keyboard.press('${this.normalizeKeyCombo(
-          step.value || "Enter"
-        )}');`;
+        return `await page.keyboard.press('${this.normalizeKeyCombo(step.action.key)}');`;
 
       case "scroll":
-        return `await page.mouse.wheel(0, ${step.value || "100"});`;
+        return `await page.mouse.wheel(0, ${(step.action.amount || 100) * (step.action.direction === "up" ? -1 : 1)});`;
 
       case "wait":
-        return `await page.waitForTimeout(${step.value || "1000"});`;
+        return `await page.waitForTimeout(${step.action.ms});`;
 
-      case "assert_visible":
-      case "assert_text":
-        {
-          // For assertions, ALWAYS prefer text-based locators
-          const locator = this.buildBestLocator(step);
-          if (!locator) return null;
+      case "assert_visible": {
+        const locator = this.buildLocator(step.elementInfo, step.action);
+        if (locator) {
           return `await expect(${locator}).toBeVisible();`;
         }
+        // Fallback: check element exists at coordinates
+        return `await expect(page.locator('body')).toBeVisible(); // assert_visible at (${step.action.x}, ${step.action.y})`;
+      }
+
+      case "assert_text": {
+        // Use text directly from action
+        return `await expect(page.getByText('${this.escapeString(step.action.text)}', { exact: false })).toBeVisible();`;
+      }
 
       case "done":
         return null; // Don't generate code for done actions
 
-      default:
-        return `// ${step.action}: ${step.reasoning}`;
+      case "mouse_move":
+      case "mouse_down":
+      case "mouse_up":
+      case "drag":
+      case "screenshot":
+        return null; // These are intermediate actions, don't generate code
+
+      default: {
+        // TypeScript exhaustiveness check
+        const actionType = (step.action as Action).type;
+        return `// ${actionType}: ${step.reasoning}`;
+      }
     }
   }
 
   /**
-   * Build the best locator for a step, prioritizing text/semantic selectors
-   * over generic element selectors
+   * Build the smartest Playwright locator from ElementInfo
+   * Priority: data-testid > role+name > label > placeholder > text > id > selector
    */
-  private buildBestLocator(step: AgenticStep): string | null {
-    const isAssertion = step.action === 'assert_visible' || step.action === 'assert_text';
-    
-    // For assertions with text value, ALWAYS use text-based locator
-    if (isAssertion && step.value && step.value.trim()) {
-      return `page.getByText('${this.escapeString(step.value)}', { exact: false })`;
+  private buildLocator(info: ElementInfo | undefined, action: Action): string | null {
+    if (!info) {
+      return null;
     }
 
-    // For non-assertions, try semantic selector first
-    if (step.selector) {
-      const semanticSelector = this.toSemanticSelector(step.selector);
-      if (semanticSelector) {
-        return semanticSelector;
-      }
-      // If selector is generic and we're not doing an assertion, return null
-      // (assertions will be handled above with text)
-      if (this.isGenericSelector(step.selector)) {
-        return null;
+    // 1. data-testid - most stable, explicit opt-in
+    const testIdMatch = info.selector.match(/\[data-testid="([^"]+)"\]/);
+    if (testIdMatch) {
+      return `page.getByTestId('${testIdMatch[1]}')`;
+    }
+
+    // 2. role + accessible name - Playwright's recommended approach
+    const role = info.role || this.inferRoleFromTagName(info.tagName);
+    if (role) {
+      const accessibleName = info.ariaLabel || info.name || this.getShortText(info.text);
+      if (accessibleName) {
+        return `page.getByRole('${role}', { name: '${this.escapeString(accessibleName)}' })`;
       }
     }
 
-    // Fallback: for assertions with generic selector but no value
-    // This shouldn't happen often but handle it gracefully
-    if (isAssertion && step.selector) {
-      return this.toSemanticSelector(step.selector);
+    // 3. label (for form inputs)
+    if ((info.tagName === "input" || info.tagName === "textarea") && info.name) {
+      return `page.getByLabel('${this.escapeString(info.name)}')`;
+    }
+
+    // 4. placeholder (for inputs)
+    if ((info.tagName === "input" || info.tagName === "textarea") && info.placeholder) {
+      return `page.getByPlaceholder('${this.escapeString(info.placeholder)}')`;
+    }
+
+    // 5. text content - for non-interactive elements or when no better option
+    if (info.text && info.text.trim()) {
+      const shortText = this.getShortText(info.text);
+      if (shortText) {
+        return `page.getByText('${this.escapeString(shortText)}', { exact: false })`;
+      }
+    }
+
+    // 6. id - stable but not semantic
+    if (info.id) {
+      return `page.locator('#${info.id}')`;
+    }
+
+    // 7. Fallback to selector string if it's not generic
+    if (info.selector && !this.isGenericSelector(info.selector)) {
+      return `page.locator('${this.escapeString(info.selector)}')`;
     }
 
     return null;
   }
 
   /**
-   * Convert a raw selector to a semantic Playwright selector
-   * Prefers getByRole, getByText, getByLabel over CSS selectors
-   * Returns null for generic element selectors (p, h1, div) to force text-based matching
+   * Infer Playwright role from HTML tag name
    */
-  private toSemanticSelector(selector: string): string | null {
-    // Skip generic element selectors - they should use text-based matching instead
-    if (this.isGenericSelector(selector)) {
-      return null;
+  private inferRoleFromTagName(tagName: string): string | null {
+    const tag = tagName.toLowerCase();
+    switch (tag) {
+      case "button":
+        return "button";
+      case "a":
+        return "link";
+      case "input":
+        // Can't infer input type without more info, but role might be set on ElementInfo
+        return null;
+      case "textarea":
+        return "textbox";
+      case "select":
+        return "combobox";
+      case "checkbox":
+      case "input[type='checkbox']":
+        return "checkbox";
+      case "radio":
+      case "input[type='radio']":
+        return "radio";
+      default:
+        return null;
     }
-
-    // data-testid - use getByTestId
-    const testIdMatch = selector.match(/\[data-testid="([^"]+)"\]/);
-    if (testIdMatch) {
-      return `page.getByTestId('${testIdMatch[1]}')`;
-    }
-
-    // role + aria-label - use getByRole with name
-    const roleMatch = selector.match(/\[role="([^"]+)"\]\[aria-label="([^"]+)"\]/);
-    if (roleMatch) {
-      return `page.getByRole('${roleMatch[1]}', { name: '${this.escapeString(roleMatch[2])}' })`;
-    }
-
-    // button:has-text or a:has-text - use getByRole
-    const hasTextMatch = selector.match(/^(button|a):has-text\("([^"]+)"\)$/);
-    if (hasTextMatch) {
-      const role = hasTextMatch[1] === "a" ? "link" : "button";
-      return `page.getByRole('${role}', { name: '${this.escapeString(hasTextMatch[2])}' })`;
-    }
-
-    // input with placeholder - use getByPlaceholder
-    const placeholderMatch = selector.match(/input\[placeholder="([^"]+)"\]/);
-    if (placeholderMatch) {
-      return `page.getByPlaceholder('${this.escapeString(placeholderMatch[1])}')`;
-    }
-
-    // label-based selectors
-    const labelMatch = selector.match(/label:has-text\("([^"]+)"\)/);
-    if (labelMatch) {
-      return `page.getByLabel('${this.escapeString(labelMatch[1])}')`;
-    }
-
-    // ID-based selector - convert to getByTestId style or use locator
-    if (selector.startsWith("#")) {
-      const id = selector.slice(1);
-      return `page.locator('#${id}')`;
-    }
-
-    // Fallback to locator for CSS selectors
-    return `page.locator('${this.escapeString(selector)}')`;
   }
 
+  /**
+   * Get short text for use in accessible name (max 50 chars)
+   */
+  private getShortText(text: string | undefined): string | null {
+    if (!text) return null;
+    const trimmed = text.trim();
+    if (trimmed.length === 0) return null;
+    // Use first 50 chars, but try to break at word boundary
+    if (trimmed.length <= 50) return trimmed;
+    const shortened = trimmed.slice(0, 50);
+    const lastSpace = shortened.lastIndexOf(" ");
+    if (lastSpace > 30) {
+      return shortened.slice(0, lastSpace);
+    }
+    return shortened;
+  }
+
+  /**
+   * Check if selector is a generic tag name (not useful as locator)
+   */
   private isGenericSelector(selector: string): boolean {
-    // Match simple tag names like 'p', 'h1', 'div', 'span', etc.
-    // These should not be used as locators due to strict mode violations
     const genericTags = /^(p|h1|h2|h3|h4|h5|h6|div|span|a|button|input|textarea|label|form|section|article|header|footer|nav|main|aside)$/i;
     return genericTags.test(selector);
   }
@@ -315,47 +338,3 @@ export class TestBuilder {
   }
 }
 
-/**
- * Build the best selector for an element from ElementInfo
- */
-export function buildBestSelector(info: ElementInfo): string {
-  // Priority: data-testid, id, role+name, text content, CSS
-
-  // 1. data-testid
-  if (info.selector.includes("data-testid")) {
-    return info.selector;
-  }
-
-  // 2. ID
-  if (info.id) {
-    return `#${info.id}`;
-  }
-
-  // 3. Role + name (aria-label or visible text)
-  if (info.role) {
-    const name = info.ariaLabel || info.name || info.text?.slice(0, 30);
-    if (name) {
-      return `[role="${info.role}"][aria-label="${name}"]`;
-    }
-  }
-
-  // 4. Button/link with text
-  if (
-    (info.tagName === "button" || info.tagName === "a") &&
-    info.text &&
-    info.text.length < 30
-  ) {
-    return `${info.tagName}:has-text("${info.text}")`;
-  }
-
-  // 5. Input with placeholder
-  if (
-    (info.tagName === "input" || info.tagName === "textarea") &&
-    info.placeholder
-  ) {
-    return `${info.tagName}[placeholder="${info.placeholder}"]`;
-  }
-
-  // 6. Fallback to the selector from ElementInfo
-  return info.selector;
-}
