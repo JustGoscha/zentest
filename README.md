@@ -6,6 +6,36 @@ Tests are defined in your language. And executed without writing any code (yours
 
 <img width="512" height="467" alt="image" src="https://github.com/user-attachments/assets/587f4a38-774a-47be-9b0b-952aa4d1b0ea" />
 
+## Installing & running
+
+We use Bun by default:
+
+```bash
+bun install
+bun run build
+```
+
+If you prefer npm, it also works:
+
+```bash
+npm install
+npm run build
+```
+
+## Getting started (first run)
+
+1. Install zentest in your project.
+2. Run: `zentest init`
+3. Edit `zentest.config.js` with your app URL and environments.
+4. Copy `.env.example` to `.env` and set your API key.
+5. Write tests in `zentests/*.md`.
+6. Run: `zentest run`
+
+Zentest generates:
+- `zentests/` with an example test
+- `zentest.config.js`
+- `.env.example`
+
 ## How it works
 
 ### Your first app test

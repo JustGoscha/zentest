@@ -24,6 +24,11 @@ export class TestBuilder {
       ``,
       ...this.buildDescriptionComment(test.description),
       `test('${test.name}', async ({ page }) => {`,
+      `  const baseUrl = process.env.ZENTEST_BASE_URL || process.env.PLAYWRIGHT_BASE_URL;`,
+      `  if (!baseUrl) {`,
+      `    throw new Error('ZENTEST_BASE_URL is required to run static tests');`,
+      `  }`,
+      `  await page.goto(baseUrl, { waitUntil: 'networkidle' });`,
     ];
 
     for (const step of steps) {

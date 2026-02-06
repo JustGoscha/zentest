@@ -6,6 +6,25 @@ This document summarizes the architectural decisions and implementation details 
 
 Zentest is an AI-powered end-to-end testing framework that uses vision-capable AI models to navigate web applications and generate Playwright tests from natural language descriptions.
 
+## Usage Rules for People and Agents
+
+Follow these steps for first-time setup:
+
+1. Install zentest in the target project.
+2. Run `zentest init` in the project root.
+3. Edit `zentest.config.js` with app URLs and environments.
+4. Copy `.env.example` to `.env` and set a provider API key.
+5. Write tests in `zentests/*.md`.
+6. Run `zentest run` to execute tests.
+
+Operational rules:
+
+- Run zentest from the project root that contains `zentest.config.js`.
+- Do not edit files under `zentests/static-tests/`; they are generated.
+- Use `zentest init` to create structure instead of hand-creating folders.
+- Keep tests in markdown files; each heading is a test.
+- Use `zentest run --agentic` only when you need to regenerate static tests.
+
 ## Architecture
 
 ```
@@ -192,6 +211,8 @@ const response = await this.client.beta.messages.create({
 
 ## File Structure
 
+.plans/ideation is where we store parked plans for AI agents.
+
 ```
 src/
 ├── types/
@@ -224,6 +245,13 @@ src/
 - `playwright` - Browser automation
 - `dotenv` - Environment variable loading
 - `commander` - CLI framework
+
+For local development we use Bun:
+
+```bash
+bun install
+bun run build
+```
 
 ## Configuration Example
 

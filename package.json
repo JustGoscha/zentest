@@ -8,6 +8,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "build:bundle": "bun build src/cli.ts --outfile dist/cli.bundle.js --target node --minify --external playwright",
     "dev": "tsc --watch",
     "start": "node dist/cli.js",
     "zentest": "node dist/cli.js"
@@ -33,6 +34,6 @@
     "commander": "^12.0.0",
     "dotenv": "^17.2.3",
     "openai": "^6.17.0",
-    "playwright": "^1.40.0"
+    "playwright": "^1.58.1"
   }
 }

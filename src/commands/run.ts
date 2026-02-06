@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
+import { spawn } from "child_process";
 import { chromium, Browser } from "playwright";
 import { parseTestFile } from "../runner/testParser.js";
 import {
@@ -31,10 +32,24 @@ interface RunOptions {
 export async function run(suite: string | undefined, options: RunOptions) {
   const cwd = process.cwd();
   const zentestsPath = path.join(cwd, "zentests");
+  const configPath = path.join(cwd, "zentest.config.js");
 
   // Check if initialized
   if (!fs.existsSync(zentestsPath)) {
-    console.error("Error: zentests/ folder not found. Run 'zentest init' first.");
+    console.error("Zentest is not initialized in this folder.");
+    console.error("");
+    console.error("First run steps:");
+    console.error("  1. Install zentest");
+    console.error("  2. Run: zentest init");
+    console.error("  3. Edit zentest.config.js with your app URL");
+    console.error("  4. Copy .env.example to .env and add your API key");
+    console.error("  5. Write tests in zentests/*.md");
+    console.error("  6. Run: zentest run");
+    process.exit(1);
+  }
+
+  if (!fs.existsSync(configPath)) {
+    console.error("zentest.config.js not found. Run 'zentest init' first.");
     process.exit(1);
   }
 
@@ -111,7 +126,8 @@ export async function run(suite: string | undefined, options: RunOptions) {
         config,
         context,
         agenticProvider,
-        options
+        options,
+        headless
       );
     } else {
       // Run all test files
@@ -122,7 +138,8 @@ export async function run(suite: string | undefined, options: RunOptions) {
           config,
           context,
           agenticProvider,
-          options
+          options,
+          headless
         );
       }
     }
@@ -137,7 +154,8 @@ async function runTestFile(
   config: ZentestConfig,
   context: Awaited<ReturnType<Browser["newContext"]>>,
   agenticProvider: ComputerUseProvider,
-  options: RunOptions
+  options: RunOptions,
+  headless: boolean
 ) {
   const testSuite = parseTestFile(filePath);
   const suiteName = path.basename(filePath, ".md");
@@ -204,12 +222,12 @@ async function runTestFile(
         await page.close();
       }
     } else {
-      // TODO: Run static test first
-    logLine(
-      INDENT_LEVELS.step,
-      `${statusLabel("warn")} Static test exists, skipping agentic (use --agentic to force)`
-    );
-      passed++; // Assume static tests pass for now
+      const ranStatic = await runStaticTest(staticTestPath, baseUrl, headless);
+      if (ranStatic) {
+        passed++;
+      } else {
+        failed++;
+      }
     }
   }
 
@@ -220,4 +238,58 @@ async function runTestFile(
     INDENT_LEVELS.test,
     `${statusLabel(failed > 0 ? "fail" : "check")} Summary: ${passedText} passed, ${failedText} failed`
   );
+}
+
+async function runStaticTest(
+  staticTestPath: string,
+  baseUrl: string,
+  headless: boolean
+): Promise<boolean> {
+  const cliPath = path.join(
+    process.cwd(),
+    "node_modules",
+    "@playwright",
+    "test",
+    "cli.js"
+  );
+
+  if (!fs.existsSync(cliPath)) {
+    logLine(
+      INDENT_LEVELS.step,
+      `${statusLabel("fail")} Playwright Test not found at ${cliPath}`
+    );
+    return false;
+  }
+
+  logLine(
+    INDENT_LEVELS.step,
+    `${statusLabel("info")} Running static test: ${staticTestPath}`
+  );
+
+  const args = [cliPath, "test", staticTestPath];
+  if (!headless) {
+    args.push("--headed");
+  }
+
+  const exitCode = await new Promise<number>((resolve) => {
+    const child = spawn(process.execPath, args, {
+      stdio: "inherit",
+      env: {
+        ...process.env,
+        ZENTEST_BASE_URL: baseUrl,
+      },
+    });
+    child.on("exit", (code) => resolve(code ?? 1));
+  });
+
+  if (exitCode === 0) {
+    logLine(
+      INDENT_LEVELS.step,
+      `${statusLabel("check")} Static test passed`
+    );
+    return true;
+  }
+
+  logLine(INDENT_LEVELS.step, `${statusLabel("fail")} Static test failed`);
+  return false;
 }
