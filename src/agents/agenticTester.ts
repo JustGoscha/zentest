@@ -75,7 +75,7 @@ export class AgenticTester {
     };
   }
 
-  async run(test: Test): Promise<AgenticTestResult> {
+  async run(test: Test, runOptions?: { skipNavigation?: boolean }): Promise<AgenticTestResult> {
     const steps: RecordedStep[] = [];
     const actionHistory: ActionHistoryEntry[] = [];
     let pendingActions: Action[] = [];
@@ -85,8 +85,10 @@ export class AgenticTester {
       // Ensure consistent viewport
       await ensureViewport(this.page, this.options.viewport);
 
-      // Navigate to base URL
-      await this.page.goto(this.baseUrl, { waitUntil: "networkidle" });
+      // Navigate to base URL (unless skipped for sequential tests)
+      if (!runOptions?.skipNavigation) {
+        await this.page.goto(this.baseUrl, { waitUntil: "networkidle" });
+      }
 
       logLine(
         INDENT_LEVELS.step,

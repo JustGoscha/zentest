@@ -11,7 +11,7 @@ import {
 } from "../config/loader.js";
 import { createProvider, ComputerUseProvider } from "../providers/index.js";
 import { AgenticTester } from "../agents/agenticTester.js";
-import { TestBuilder } from "../agents/testBuilder.js";
+import { TestBuilder, TestResult } from "../agents/testBuilder.js";
 import {
   INDENT_LEVELS,
   color,
@@ -180,70 +180,77 @@ async function runTestFile(
   console.log("");
   logLine(INDENT_LEVELS.suite, formatSuiteHeader(testSuite.name));
 
+  // Static test path is now a single file for the entire suite
+  const staticTestsDir = path.join(path.dirname(filePath), "static-tests");
+  const staticTestPath = path.join(staticTestsDir, `${suiteName}.spec.js`);
+  const hasStaticTest = fs.existsSync(staticTestPath);
+
+  // Decide whether to run agentic for the whole suite
+  const runAgentic = options.agentic || !hasStaticTest;
+
   let passed = 0;
   let failed = 0;
 
-  for (const test of testSuite.tests) {
-    console.log("");
-    logLine(INDENT_LEVELS.test, formatTestHeader(test.name));
-    logLine(INDENT_LEVELS.step, color.dim(`"${test.description}"`));
+  if (runAgentic) {
+    // Run agentic tests - share one page across all tests in the suite
+    const page = await context.newPage();
+    const testResults: TestResult[] = [];
+    let isFirstTest = true;
 
-    // Check if static test exists
-    const staticTestPath = path.join(
-      path.dirname(filePath),
-      "static-tests",
-      `${suiteName}.${test.name}.spec.js`
-    );
-    const hasStaticTest = fs.existsSync(staticTestPath);
+    try {
+      for (const test of testSuite.tests) {
+        console.log("");
+        logLine(INDENT_LEVELS.test, formatTestHeader(test.name));
+        logLine(INDENT_LEVELS.step, color.dim(`"${test.description}"`));
 
-    // Decide whether to run agentic
-    const runAgentic = options.agentic || !hasStaticTest;
-
-    if (runAgentic) {
-      // Run agentic test
-      const page = await context.newPage();
-
-      try {
+        // Only navigate to baseUrl on the first test
         const tester = new AgenticTester(page, baseUrl, agenticProvider, {
           maxSteps: config.maxSteps,
           viewport: config.viewport,
           verbose: options.verbose,
         });
 
-        const result = await tester.run(test);
+        const result = await tester.run(test, { skipNavigation: !isFirstTest });
+        isFirstTest = false;
 
         if (result.success) {
           passed++;
+          testResults.push({ test, steps: result.steps });
+        } else {
+          failed++;
+          // Stop on first failure - subsequent tests likely depend on previous state
+          logLine(
+            INDENT_LEVELS.step,
+            `${statusLabel("warn")} Stopping suite - subsequent tests depend on previous state`
+          );
+          break;
+        }
+      }
 
-          // Generate static test on success
-          const builder = new TestBuilder(suiteName, test.name);
-          const testCode = builder.generate(result.steps, test);
+      // Generate single static test file if we have any successful results
+      if (testResults.length > 0) {
+        if (!fs.existsSync(staticTestsDir)) {
+          fs.mkdirSync(staticTestsDir, { recursive: true });
+        }
 
-          // Ensure static-tests directory exists
-          const staticTestsDir = path.join(path.dirname(filePath), "static-tests");
-          if (!fs.existsSync(staticTestsDir)) {
-            fs.mkdirSync(staticTestsDir, { recursive: true });
-          }
-
-          // Write static test
-          fs.writeFileSync(staticTestPath, testCode);
+        const builder = new TestBuilder(suiteName, "");
+        const testCode = builder.generateSuite(testResults, testSuite);
+        fs.writeFileSync(staticTestPath, testCode);
         logLine(
           INDENT_LEVELS.step,
           `${statusLabel("check")} Generated static test: ${staticTestPath}`
         );
-        } else {
-          failed++;
-        }
-      } finally {
-        await page.close();
       }
+    } finally {
+      await page.close();
+    }
+  } else {
+    // Run the single combined static test file
+    const ranStatic = await runStaticTest(staticTestPath, baseUrl, headless);
+    if (ranStatic) {
+      passed = testSuite.tests.length;
     } else {
-      const ranStatic = await runStaticTest(staticTestPath, baseUrl, headless);
-      if (ranStatic) {
-        passed++;
-      } else {
-        failed++;
-      }
+      failed = testSuite.tests.length;
     }
   }
 

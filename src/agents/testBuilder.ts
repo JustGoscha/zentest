@@ -1,5 +1,10 @@
-import { Test } from "../runner/testParser.js";
+import { Test, TestSuite } from "../runner/testParser.js";
 import { RecordedStep, Action, ElementInfo } from "../types/actions.js";
+
+export interface TestResult {
+  test: Test;
+  steps: RecordedStep[];
+}
 
 /**
  * The Test Builder observes the Agentic Tester's actions
@@ -70,6 +75,104 @@ export class TestBuilder {
     lines.push(``);
 
     return lines.join("\n");
+  }
+
+  /**
+   * Generate a Playwright test suite from multiple tests
+   * Uses test.describe.serial() so tests run in order and share browser state
+   */
+  generateSuite(testResults: TestResult[], suite: TestSuite): string {
+    const lines: string[] = [
+      `import { test, expect } from '@playwright/test';`,
+      ``,
+      ...this.buildConfigLoader(),
+      ``,
+      `test.describe.serial('${this.escapeString(suite.name)}', () => {`,
+      `  let baseUrl;`,
+      `  let page;`,
+      ``,
+      `  test.beforeAll(async ({ browser }) => {`,
+      `    const zentestConfig = await loadZentestConfig();`,
+      `    const envName = process.env.ZENTEST_ENV;`,
+      `    const envUrl = envName ? zentestConfig.environments?.[envName]?.url : undefined;`,
+      `    baseUrl = envUrl || zentestConfig.baseUrl;`,
+      `    if (!baseUrl) {`,
+      `      throw new Error('baseUrl is required to run static tests. Set it in zentest.config.js or use ZENTEST_ENV to select an environment.');`,
+      `    }`,
+      `    page = await browser.newPage();`,
+      `  });`,
+      ``,
+      `  test.afterAll(async () => {`,
+      `    await page.close();`,
+      `  });`,
+      ``,
+    ];
+
+    let isFirst = true;
+    for (const { test, steps } of testResults) {
+      lines.push(...this.buildTestBlock(test, steps, isFirst));
+      isFirst = false;
+    }
+
+    lines.push(`});`);
+    lines.push(``);
+
+    return lines.join("\n");
+  }
+
+  private buildConfigLoader(): string[] {
+    return [
+      `async function loadZentestConfig() {`,
+      `  try {`,
+      `    const configUrl = new URL('../../zentest.config.js', import.meta.url);`,
+      `    const loaded = await import(configUrl.href);`,
+      `    return (loaded && loaded.default) || loaded || {};`,
+      `  } catch {`,
+      `    return {};`,
+      `  }`,
+      `}`,
+    ];
+  }
+
+  private buildTestBlock(test: Test, steps: RecordedStep[], navigateFirst: boolean): string[] {
+    const lines: string[] = [];
+
+    // Add description comment
+    lines.push(...this.buildDescriptionComment(test.description).map(line => `  ${line}`));
+    lines.push(`  test('${test.name}', async () => {`);
+
+    // Only navigate on first test
+    if (navigateFirst) {
+      lines.push(`    await page.goto(baseUrl, { waitUntil: 'networkidle' });`);
+    }
+
+    const seenAssertions = new Set<string>();
+
+    for (const step of steps) {
+      const code = this.stepToCode(step);
+      if (code) {
+        // Deduplicate identical assertions
+        const isAssertion = step.action.type === 'assert_visible' || step.action.type === 'assert_text';
+        if (isAssertion && seenAssertions.has(code)) {
+          continue; // Skip duplicate assertion
+        }
+
+        if (isAssertion) {
+          seenAssertions.add(code);
+        }
+
+        // Add reasoning as comment
+        if (step.reasoning) {
+          lines.push(`    // ${step.reasoning.slice(0, 80)}`);
+        }
+        lines.push(`    ${code}`);
+      }
+    }
+
+    lines.push(`  });`);
+    lines.push(``);
+
+    return lines;
   }
 
   private buildDescriptionComment(description: string): string[] {
