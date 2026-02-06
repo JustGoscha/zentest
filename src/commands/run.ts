@@ -20,6 +20,7 @@ import {
   logLine,
   statusLabel,
 } from "../ui/cliOutput.js";
+import { init } from "./init.js";
 
 interface RunOptions {
   agentic?: boolean;
@@ -34,23 +35,9 @@ export async function run(suite: string | undefined, options: RunOptions) {
   const zentestsPath = path.join(cwd, "zentests");
   const configPath = path.join(cwd, "zentest.config.js");
 
-  // Check if initialized
-  if (!fs.existsSync(zentestsPath)) {
-    console.error("Zentest is not initialized in this folder.");
-    console.error("");
-    console.error("First run steps:");
-    console.error("  1. Install zentest");
-    console.error("  2. Run: zentest init");
-    console.error("  3. Edit zentest.config.js with your app URL");
-    console.error("  4. Copy .env.example to .env and add your API key");
-    console.error("  5. Write tests in zentests/*.md");
-    console.error("  6. Run: zentest run");
-    process.exit(1);
-  }
-
-  if (!fs.existsSync(configPath)) {
-    console.error("zentest.config.js not found. Run 'zentest init' first.");
-    process.exit(1);
+  // Auto-initialize if needed
+  if (!fs.existsSync(zentestsPath) || !fs.existsSync(configPath)) {
+    await init();
   }
 
   // Load config
@@ -205,7 +192,7 @@ async function runTestFile(
     const staticTestPath = path.join(
       path.dirname(filePath),
       "static-tests",
-      `${suiteName}.${test.name}.spec.ts`
+      `${suiteName}.${test.name}.spec.js`
     );
     const hasStaticTest = fs.existsSync(staticTestPath);
 
@@ -275,8 +262,9 @@ async function runStaticTest(
   baseUrl: string,
   headless: boolean
 ): Promise<boolean> {
+  const cwd = process.cwd();
   const cliPath = path.join(
-    process.cwd(),
+    cwd,
     "node_modules",
     "@playwright",
     "test",
@@ -297,6 +285,13 @@ async function runStaticTest(
   );
 
   const args = [cliPath, "test", staticTestPath];
+
+  // Point Playwright at the config so its TS transformer registers properly
+  const configPath = path.join(cwd, "playwright.config.ts");
+  if (fs.existsSync(configPath)) {
+    args.push("--config", configPath);
+  }
+
   if (!headless) {
     args.push("--headed");
   }

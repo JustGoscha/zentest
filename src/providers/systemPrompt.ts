@@ -80,8 +80,8 @@ Your task is to complete the following test:
 ${historyText}
 
 Based on the current screenshot, decide what action to take next to complete the test.
-Before you report success, you must verify the success state with an assertion (assert_visible or assert_text) on a UI element that proves the test succeeded.
-When you have successfully completed the test, use the done action with success: true.
+When you can verify the test is complete, return BOTH an assertion (assert_visible or assert_text) AND the done action with success: true in the same response.
+NEVER return just an assertion without the done action when the test can be completed.
 If you cannot complete the test, use the done action with success: false and explain why.
 
 IMPORTANT:
@@ -123,8 +123,8 @@ Respond with a JSON object with two fields:
 IMPORTANT:
 - Coordinates should be within the viewport (${viewport.width}x${viewport.height})
 - Click on elements that are visible and interactive
-- Before done with success: true, always run an assertion (assert_visible or assert_text) on a UI element that proves success
-- When the test is complete, use the done action with success: true
+- When the test is complete, return BOTH an assertion AND the done action in the same batch: [assert_text, done]
+- NEVER return just an assertion without the done action when you can verify the test is complete
 - If you cannot complete the test, use done with success: false
 - Prefer returning multiple "actions" for simple, deterministic sequences (for example: click input → type → click next input → type → click submit)
 - Only return multiple "actions" when you are confident each step can be executed without needing a new screenshot

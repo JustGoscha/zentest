@@ -22,18 +22,43 @@ export class TestBuilder {
     const lines: string[] = [
       `import { test, expect } from '@playwright/test';`,
       ``,
+      `async function loadZentestConfig() {`,
+      `  try {`,
+      `    const configUrl = new URL('../../zentest.config.js', import.meta.url);`,
+      `    const loaded = await import(configUrl.href);`,
+      `    return (loaded && loaded.default) || loaded || {};`,
+      `  } catch {`,
+      `    return {};`,
+      `  }`,
+      `}`,
+      ``,
       ...this.buildDescriptionComment(test.description),
       `test('${test.name}', async ({ page }) => {`,
-      `  const baseUrl = process.env.ZENTEST_BASE_URL || process.env.PLAYWRIGHT_BASE_URL;`,
+      `  const zentestConfig = await loadZentestConfig();`,
+      `  const envName = process.env.ZENTEST_ENV;`,
+      `  const envUrl = envName ? zentestConfig.environments?.[envName]?.url : undefined;`,
+      `  const baseUrl = envUrl || zentestConfig.baseUrl;`,
       `  if (!baseUrl) {`,
-      `    throw new Error('ZENTEST_BASE_URL is required to run static tests');`,
+      `    throw new Error('baseUrl is required to run static tests. Set it in zentest.config.js or use ZENTEST_ENV to select an environment.');`,
       `  }`,
       `  await page.goto(baseUrl, { waitUntil: 'networkidle' });`,
     ];
 
+    const seenAssertions = new Set<string>();
+    
     for (const step of steps) {
       const code = this.stepToCode(step);
       if (code) {
+        // Deduplicate identical assertions
+        const isAssertion = step.action === 'assert_visible' || step.action === 'assert_text';
+        if (isAssertion && seenAssertions.has(code)) {
+          continue; // Skip duplicate assertion
+        }
+        
+        if (isAssertion) {
+          seenAssertions.add(code);
+        }
+        
         // Add reasoning as comment
         if (step.reasoning) {
           lines.push(`  // ${step.reasoning.slice(0, 80)}`);
@@ -74,27 +99,41 @@ export class TestBuilder {
   }
 
   private stepToCode(step: AgenticStep): string | null {
-    const selector = step.selector ? this.toSemanticSelector(step.selector) : null;
-
     switch (step.action) {
       case "navigate":
         return `await page.goto('${this.escapeString(step.value || "")}');`;
 
       case "click":
-        if (!selector) return null;
-        return `await ${selector}.click();`;
+        {
+          const locator = this.buildBestLocator(step);
+          if (!locator) return null;
+          return `await ${locator}.click();`;
+        }
 
       case "click_button":
-        if (selector) return `await ${selector}.click();`;
-        return `await page.getByRole('button', { name: '${this.escapeString(step.value || "")}', exact: true }).click();`;
+        {
+          // For buttons, always prefer text-based locator if we have the text
+          if (step.value) {
+            return `await page.getByRole('button', { name: '${this.escapeString(step.value)}' }).click();`;
+          }
+          const locator = this.buildBestLocator(step);
+          if (!locator) return null;
+          return `await ${locator}.click();`;
+        }
 
       case "double_click":
-        if (!selector) return null;
-        return `await ${selector}.dblclick();`;
+        {
+          const locator = this.buildBestLocator(step);
+          if (!locator) return null;
+          return `await ${locator}.dblclick();`;
+        }
 
       case "type":
-        if (!selector) return null;
-        return `await ${selector}.fill('${this.escapeString(step.value || "")}');`;
+        {
+          const locator = this.buildBestLocator(step);
+          if (!locator) return null;
+          return `await ${locator}.fill('${this.escapeString(step.value || "")}');`;
+        }
 
       case "key":
         return `await page.keyboard.press('${this.normalizeKeyCombo(
@@ -108,15 +147,13 @@ export class TestBuilder {
         return `await page.waitForTimeout(${step.value || "1000"});`;
 
       case "assert_visible":
-        if (!selector) return null;
-        if (step.value) {
-          return `await expect(${selector}).toBeVisible();\n  await expect(${selector}).toContainText('${this.escapeString(step.value)}');`;
-        }
-        return `await expect(${selector}).toBeVisible();`;
-
       case "assert_text":
-        if (!selector) return null;
-        return `await expect(${selector}).toContainText('${this.escapeString(step.value || "")}');`;
+        {
+          // For assertions, ALWAYS prefer text-based locators
+          const locator = this.buildBestLocator(step);
+          if (!locator) return null;
+          return `await expect(${locator}).toBeVisible();`;
+        }
 
       case "done":
         return null; // Don't generate code for done actions
@@ -127,10 +164,50 @@ export class TestBuilder {
   }
 
   /**
+   * Build the best locator for a step, prioritizing text/semantic selectors
+   * over generic element selectors
+   */
+  private buildBestLocator(step: AgenticStep): string | null {
+    const isAssertion = step.action === 'assert_visible' || step.action === 'assert_text';
+    
+    // For assertions with text value, ALWAYS use text-based locator
+    if (isAssertion && step.value && step.value.trim()) {
+      return `page.getByText('${this.escapeString(step.value)}', { exact: false })`;
+    }
+
+    // For non-assertions, try semantic selector first
+    if (step.selector) {
+      const semanticSelector = this.toSemanticSelector(step.selector);
+      if (semanticSelector) {
+        return semanticSelector;
+      }
+      // If selector is generic and we're not doing an assertion, return null
+      // (assertions will be handled above with text)
+      if (this.isGenericSelector(step.selector)) {
+        return null;
+      }
+    }
+
+    // Fallback: for assertions with generic selector but no value
+    // This shouldn't happen often but handle it gracefully
+    if (isAssertion && step.selector) {
+      return this.toSemanticSelector(step.selector);
+    }
+
+    return null;
+  }
+
+  /**
    * Convert a raw selector to a semantic Playwright selector
    * Prefers getByRole, getByText, getByLabel over CSS selectors
+   * Returns null for generic element selectors (p, h1, div) to force text-based matching
    */
-  private toSemanticSelector(selector: string): string {
+  private toSemanticSelector(selector: string): string | null {
+    // Skip generic element selectors - they should use text-based matching instead
+    if (this.isGenericSelector(selector)) {
+      return null;
+    }
+
     // data-testid - use getByTestId
     const testIdMatch = selector.match(/\[data-testid="([^"]+)"\]/);
     if (testIdMatch) {
@@ -170,6 +247,13 @@ export class TestBuilder {
 
     // Fallback to locator for CSS selectors
     return `page.locator('${this.escapeString(selector)}')`;
+  }
+
+  private isGenericSelector(selector: string): boolean {
+    // Match simple tag names like 'p', 'h1', 'div', 'span', etc.
+    // These should not be used as locators due to strict mode violations
+    const genericTags = /^(p|h1|h2|h3|h4|h5|h6|div|span|a|button|input|textarea|label|form|section|article|header|footer|nav|main|aside)$/i;
+    return genericTags.test(selector);
   }
 
   private normalizeKeyCombo(rawKey: string): string {

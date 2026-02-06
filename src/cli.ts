@@ -35,4 +35,27 @@ program
   .option("--headed", "Run browser in visible mode (overrides auto-detect)")
   .action(run);
 
+// Default action: auto-init XOR auto-run (with same options as run)
+program
+  .option("--agentic", "Force agentic mode (skip static tests)")
+  .option("--verbose", "Log full reasoning and tool use")
+  .option("--env <environment>", "Run against specific environment")
+  .option("--headless", "Run browser in headless mode")
+  .option("--headed", "Run browser in visible mode (overrides auto-detect)")
+  .action(async (args, command) => {
+    const options = command.opts();
+    const cwd = process.cwd();
+    const zentestsPath = path.join(cwd, "zentests");
+    const configPath = path.join(cwd, "zentest.config.js");
+    
+    // If not initialized, run init and exit
+    if (!fs.existsSync(zentestsPath) || !fs.existsSync(configPath)) {
+      await init();
+      return;
+    }
+    
+    // Otherwise, run tests with options
+    await run(undefined, options);
+  });
+
 program.parse();

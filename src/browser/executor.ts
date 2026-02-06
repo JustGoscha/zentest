@@ -189,17 +189,19 @@ export class BrowserExecutor {
       }
 
       case "assert_text": {
-        const elementInfo = await this.getElementAtPoint(action.x, action.y);
-        if (!elementInfo) {
-          throw new Error(`No element found at (${action.x}, ${action.y})`);
+        // Use text-based locator instead of position-based
+        // This matches how the test builder generates tests
+        const locator = this.page.getByText(action.text, { exact: false });
+        const count = await locator.count();
+        
+        if (count === 0) {
+          throw new Error(`Text "${action.text}" not found anywhere on the page`);
         }
-        const locator = this.page.locator(elementInfo.selector).first();
-        const text = (await locator.textContent()) || "";
-        if (!text.includes(action.text)) {
-          throw new Error(
-            `Expected text "${action.text}" not found at (${action.x}, ${action.y})`
-          );
-        }
+        
+        // Get element info for the first match (for recording purposes)
+        const handle = await locator.first().elementHandle();
+        const elementInfo = handle ? await this.getElementInfoFromHandle(handle) : undefined;
+        
         const screenshot = await captureScreenshot(this.page);
         return { action, screenshot, elementInfo, timestamp };
       }

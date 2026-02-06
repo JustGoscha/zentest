@@ -9,6 +9,7 @@ import {
 } from "../browser/screenshot.js";
 import { ComputerUseProvider } from "../providers/index.js";
 import type { TokenUsage } from "../providers/base.js";
+import { buildSystemPrompt } from "../providers/systemPrompt.js";
 import {
   INDENT_LEVELS,
   color,
@@ -282,24 +283,68 @@ export class AgenticTester {
       const failureText = this.lastFailure
         ? `${this.formatActionSummary(this.lastFailure.action ?? { type: "done", success: false, reason: "" })} failed with error: ${this.lastFailure.error}`
         : undefined;
-      const result = await this.provider.getNextAction({
+      
+      const requestParams = {
         screenshot,
         testDescription: params.testDescription,
         actionHistory: params.actionHistory,
         viewport: params.viewport,
         lastFailureText: failureText,
-      });
+      };
+      
+      if (this.options.verbose) {
+        spinner.stop();
+        logLine(INDENT_LEVELS.detail, ``);
+        const systemPrompt = buildSystemPrompt({
+          testDescription: params.testDescription,
+          actionHistory: params.actionHistory,
+          viewport: params.viewport,
+          mode: "json",
+        });
+        
+        const userMessageText = `${
+          failureText
+            ? `Last instruction failed: ${failureText}. Try a different action.\n\n`
+            : ""
+        }Did we complete the test? If not, what action should I take next to complete the test? Respond with JSON.`;
+        
+        logLine(INDENT_LEVELS.detail, `${color.blue("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")}`);
+        logLine(INDENT_LEVELS.detail, `${color.blue("Request to AI")}`);
+        logLine(INDENT_LEVELS.detail, `${color.blue("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")}`);
+        logLine(INDENT_LEVELS.detail, ``);
+        logLine(INDENT_LEVELS.detail, `${color.cyan("System Prompt:")}`);
+        logLine(INDENT_LEVELS.detail, `${color.gray("─────────────────────────────────────────")}`);
+        this.logMultiline(INDENT_LEVELS.detail + 1, systemPrompt);
+        logLine(INDENT_LEVELS.detail, ``);
+        logLine(INDENT_LEVELS.detail, `${color.cyan("User Message:")}`);
+        logLine(INDENT_LEVELS.detail, `${color.gray("─────────────────────────────────────────")}`);
+        logLine(INDENT_LEVELS.detail + 1, `${color.gray("[Image: Screenshot (base64 encoded)]")}`);
+        this.logMultiline(INDENT_LEVELS.detail + 1, userMessageText);
+        logLine(INDENT_LEVELS.detail, ``);
+        logLine(INDENT_LEVELS.detail, `${color.blue("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")}`);
+        logLine(INDENT_LEVELS.detail, ``);
+      }
+      
+      const result = await this.provider.getNextAction(requestParams);
       this.aiStepCount += 1;
       this.recordUsage(result.usage);
       clearTimeout(switchTimer);
-      spinner.update("AI is thinking...");
+      if (!this.options.verbose) {
+        spinner.update("AI is thinking...");
+      }
       spinner.stop();
       if (this.lastFailure?.screenshot) {
         this.lastFailure = undefined;
       }
       const normalized = this.normalizeResult(result);
       if (this.options.verbose && normalized.rawResponse) {
-        this.logRawAiResponse(normalized.rawResponse);
+        logLine(INDENT_LEVELS.detail, ``);
+        logLine(INDENT_LEVELS.detail, `${color.green("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")}`);
+        logLine(INDENT_LEVELS.detail, `${color.green("AI Raw Response:")}`);
+        logLine(INDENT_LEVELS.detail, `${color.green("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")}`);
+        this.logMultiline(INDENT_LEVELS.detail + 1, normalized.rawResponse);
+        logLine(INDENT_LEVELS.detail, `${color.green("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")}`);
+        logLine(INDENT_LEVELS.detail, ``);
       }
       logLine(INDENT_LEVELS.detail, `${color.yellow("AI:")} ${normalized.reasoning}`);
       logLine(
@@ -352,11 +397,6 @@ export class AgenticTester {
       rawResponse: result.rawResponse,
       usage: result.usage,
     };
-  }
-
-  private logRawAiResponse(raw: string): void {
-    logLine(INDENT_LEVELS.detail, `${color.gray("AI raw response:")}`);
-    this.logMultiline(INDENT_LEVELS.detail, raw);
   }
 
   private logMultiline(level: number, text: string): void {

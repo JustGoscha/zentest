@@ -20,7 +20,18 @@ const DEFAULT_CONFIG = `export default {
 const EXAMPLE_TEST = `# Example Tests
 
 ## example-test
-A user can visit the homepage and see a welcome message
+A user can visit the homepage and it says Example Domain somewhere
+`;
+
+const PLAYWRIGHT_CONFIG = `import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  testDir: './zentests/static-tests',
+  timeout: 60000,
+  use: {
+    // Base URL set via ZENTEST_BASE_URL env variable at runtime
+  },
+});
 `;
 
 const ENV_EXAMPLE = `# Zentest Environment Variables
@@ -115,6 +126,12 @@ export async function init() {
     fs.writeFileSync(configPath, DEFAULT_CONFIG);
   }
 
+  // Create playwright config
+  const playwrightConfigPath = path.join(cwd, "playwright.config.ts");
+  if (!fs.existsSync(playwrightConfigPath)) {
+    fs.writeFileSync(playwrightConfigPath, PLAYWRIGHT_CONFIG);
+  }
+
   // Create env example file
   if (!fs.existsSync(envExamplePath)) {
     fs.writeFileSync(envExamplePath, ENV_EXAMPLE);
@@ -132,6 +149,7 @@ export async function init() {
     const projectName = path.basename(cwd) || "zentest-project";
     const packageJson = {
       name: projectName,
+      type: "module",
       private: true,
       scripts: {
         zentest: "zentest run",
@@ -157,6 +175,7 @@ export async function init() {
   console.log("  - Created zentests/ folder");
   console.log("  - Created zentests/example-tests.md");
   console.log("  - Created zentest.config.js");
+  console.log("  - Created playwright.config.ts");
   console.log("  - Created .env.example");
   if (envCreated) {
     console.log("  - Created .env");
