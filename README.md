@@ -22,6 +22,18 @@ npm install
 npm run build
 ```
 
+## Install as a CLI (run `zentest`)
+
+Local dev usage:
+
+```bash
+cd zentest
+npm run build
+npm link
+```
+
+Now `zentest` is available on your PATH.
+
 ## Getting started (first run)
 
 1. Install zentest in your project.

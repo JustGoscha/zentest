@@ -21,7 +21,7 @@ export class OpenAIProvider implements ComputerUseProvider {
     const key = apiKey || process.env.ZENTEST_OPENAI_API_KEY;
     if (!key) {
       throw new Error(
-        "OpenAI API key required. Set ZENTEST_OPENAI_API_KEY or pass apiKey in config."
+        "API key required. Set ONE of: ZENTEST_ANTHROPIC_API_KEY, ZENTEST_OPENAI_API_KEY, or ZENTEST_OPENROUTER_API_KEY"
       );
     }
     this.client = new OpenAI({ apiKey: key });

@@ -94,13 +94,43 @@ export async function run(suite: string | undefined, options: RunOptions) {
     `${statusLabel("info")} Browser: ${headless ? "headless" : "visible"}`
   );
 
+  // Check if any API key is available
+  const hasAnthropicKey = !!process.env.ZENTEST_ANTHROPIC_API_KEY;
+  const hasOpenAIKey = !!process.env.ZENTEST_OPENAI_API_KEY;
+  const hasOpenRouterKey = !!process.env.ZENTEST_OPENROUTER_API_KEY;
+  
+  if (!hasAnthropicKey && !hasOpenAIKey && !hasOpenRouterKey && !config.apiKey) {
+    console.error("Error: API key required. Set ONE of the following:");
+    console.error("  - ZENTEST_ANTHROPIC_API_KEY (for Anthropic/Claude)");
+    console.error("  - ZENTEST_OPENAI_API_KEY (for OpenAI)");
+    console.error("  - ZENTEST_OPENROUTER_API_KEY (for OpenRouter)");
+    console.error("");
+    console.error("Or set 'apiKey' in your zentest.config.js");
+    process.exit(1);
+  }
+
   // Create provider for agentic tester
   const apiKey = getApiKey(config);
-  const agenticProvider = createProvider({
-    provider: config.provider,
-    model: config.models.agenticModel,
-    apiKey,
-  });
+  let agenticProvider: ComputerUseProvider;
+  try {
+    agenticProvider = createProvider({
+      provider: config.provider,
+      model: config.models.agenticModel,
+      apiKey,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("API key required")) {
+      console.error("Error: API key required. Set ONE of the following:");
+      console.error("  - ZENTEST_ANTHROPIC_API_KEY (for Anthropic/Claude)");
+      console.error("  - ZENTEST_OPENAI_API_KEY (for OpenAI)");
+      console.error("  - ZENTEST_OPENROUTER_API_KEY (for OpenRouter)");
+      console.error("");
+      console.error(`Current provider: ${config.provider}`);
+      console.error(`Set ZENTEST_${config.provider.toUpperCase()}_API_KEY or change provider in config`);
+      process.exit(1);
+    }
+    throw error;
+  }
 
   // Launch browser
   const browser = await chromium.launch({ headless });
