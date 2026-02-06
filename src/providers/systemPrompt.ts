@@ -41,6 +41,10 @@ const formatActionSummary = (action: Action): string => {
       return `scroll ${action.direction} ${action.amount ?? 100}px at (${action.x}, ${action.y})`;
     case "wait":
       return `wait ${action.ms}ms`;
+    case "assert_visible":
+      return `assert_visible (${action.x}, ${action.y})`;
+    case "assert_text":
+      return `assert_text (${action.x}, ${action.y}) "${truncate(action.text ?? "", 50)}"`;
     case "screenshot":
       return "screenshot";
     case "done":
@@ -76,6 +80,7 @@ Your task is to complete the following test:
 ${historyText}
 
 Based on the current screenshot, decide what action to take next to complete the test.
+Before you report success, you must verify the success state with an assertion (assert_visible or assert_text) on a UI element that proves the test succeeded.
 When you have successfully completed the test, use the done action with success: true.
 If you cannot complete the test, use the done action with success: false and explain why.
 
@@ -107,6 +112,8 @@ Available actions:
 - key: { "type": "key", "key": string } (e.g., "Enter", "Tab", "Escape", "Control+A", "Cmd+Z")
 - scroll: { "type": "scroll", "x": number, "y": number, "direction": "up" | "down", "amount": number }
 - wait: { "type": "wait", "ms": number }
+- assert_visible: { "type": "assert_visible", "x": number, "y": number }
+- assert_text: { "type": "assert_text", "x": number, "y": number, "text": string }
 - done: { "type": "done", "success": boolean, "reason": string }
 
 Respond with a JSON object with two fields:
@@ -116,6 +123,7 @@ Respond with a JSON object with two fields:
 IMPORTANT:
 - Coordinates should be within the viewport (${viewport.width}x${viewport.height})
 - Click on elements that are visible and interactive
+- Before done with success: true, always run an assertion (assert_visible or assert_text) on a UI element that proves success
 - When the test is complete, use the done action with success: true
 - If you cannot complete the test, use done with success: false
 - Prefer returning multiple "actions" for simple, deterministic sequences (for example: click input → type → click next input → type → click submit)

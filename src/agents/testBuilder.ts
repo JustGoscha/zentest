@@ -22,7 +22,7 @@ export class TestBuilder {
     const lines: string[] = [
       `import { test, expect } from '@playwright/test';`,
       ``,
-      `// Generated from: "${test.description}"`,
+      ...this.buildDescriptionComment(test.description),
       `test('${test.name}', async ({ page }) => {`,
     ];
 
@@ -41,6 +41,31 @@ export class TestBuilder {
     lines.push(``);
 
     return lines.join("\n");
+  }
+
+  private buildDescriptionComment(description: string): string[] {
+    if (!description) {
+      return [`// Generated from: ""`];
+    }
+
+    if (!description.includes("\n")) {
+      return [`// Generated from: "${description}"`];
+    }
+
+    const lines = description
+      .split("\n")
+      .map((line) => line.trimEnd())
+      .filter((line) => line.trim().length > 0);
+
+    if (lines.length === 0) {
+      return [`// Generated from: ""`];
+    }
+
+    return [
+      `/**`,
+      ...lines.map((line) => ` * ${line}`),
+      ` */`,
+    ];
   }
 
   private stepToCode(step: AgenticStep): string | null {
@@ -79,6 +104,9 @@ export class TestBuilder {
 
       case "assert_visible":
         if (!selector) return null;
+        if (step.value) {
+          return `await expect(${selector}).toBeVisible();\n  await expect(${selector}).toContainText('${this.escapeString(step.value)}');`;
+        }
         return `await expect(${selector}).toBeVisible();`;
 
       case "assert_text":

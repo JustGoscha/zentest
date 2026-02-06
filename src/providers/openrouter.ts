@@ -3,6 +3,7 @@ import {
   ComputerUseProvider,
   GetNextActionParams,
   GetNextActionResult,
+  TokenUsage,
 } from "./base.js";
 import { Action } from "../types/actions.js";
 import { buildSystemPrompt } from "./systemPrompt.js";
@@ -72,7 +73,11 @@ export class OpenRouterProvider implements ComputerUseProvider {
       ],
     });
 
-    return this.parseResponse(response);
+    const parsed = this.parseResponse(response);
+    return {
+      ...parsed,
+      usage: this.extractUsage(response),
+    };
   }
 
   private parseResponse(
@@ -220,6 +225,21 @@ export class OpenRouterProvider implements ComputerUseProvider {
       case "wait":
         return { type: "wait", ms: Number(a.ms) || 1000 };
 
+      case "assert_visible":
+        return {
+          type: "assert_visible",
+          x: Number(a.x) || 0,
+          y: Number(a.y) || 0,
+        };
+
+      case "assert_text":
+        return {
+          type: "assert_text",
+          x: Number(a.x) || 0,
+          y: Number(a.y) || 0,
+          text: String(a.text || ""),
+        };
+
       case "done":
         return {
           type: "done",
@@ -230,5 +250,17 @@ export class OpenRouterProvider implements ComputerUseProvider {
       default:
         return { type: "done", success: false, reason: `Unknown action: ${type}` };
     }
+  }
+
+  private extractUsage(
+    response: OpenAI.Chat.Completions.ChatCompletion
+  ): TokenUsage | undefined {
+    const usage = response.usage;
+    if (!usage) return undefined;
+    return {
+      inputTokens: usage.prompt_tokens,
+      outputTokens: usage.completion_tokens,
+      totalTokens: usage.total_tokens,
+    };
   }
 }

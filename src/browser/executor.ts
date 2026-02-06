@@ -147,6 +147,63 @@ export class BrowserExecutor {
           await this.page.waitForTimeout(action.ms);
           break;
 
+      case "assert_visible": {
+        const elementInfo = await this.getElementAtPoint(action.x, action.y);
+        if (!elementInfo) {
+          throw new Error(`No element found at (${action.x}, ${action.y})`);
+        }
+        const locator = this.page.locator(elementInfo.selector).first();
+        const visible = await locator.isVisible();
+        if (!visible) {
+          throw new Error(`Element not visible at (${action.x}, ${action.y})`);
+        }
+        const expectedText = elementInfo.text?.trim();
+        if (expectedText) {
+          const actualText = (await locator.textContent()) || "";
+          if (!actualText.includes(expectedText)) {
+            throw new Error(
+              `Expected text "${expectedText}" not found at (${action.x}, ${action.y})`
+            );
+          }
+        } else if (elementInfo.ariaLabel || elementInfo.name) {
+          const expectedLabel = elementInfo.ariaLabel || elementInfo.name || "";
+          const actualLabel =
+            (await locator.getAttribute("aria-label")) ||
+            (await locator.getAttribute("name")) ||
+            "";
+          if (expectedLabel && actualLabel !== expectedLabel) {
+            throw new Error(
+              `Expected label "${expectedLabel}" not found at (${action.x}, ${action.y})`
+            );
+          }
+        } else if (elementInfo.placeholder) {
+          const actualPlaceholder = (await locator.getAttribute("placeholder")) || "";
+          if (actualPlaceholder !== elementInfo.placeholder) {
+            throw new Error(
+              `Expected placeholder "${elementInfo.placeholder}" not found at (${action.x}, ${action.y})`
+            );
+          }
+        }
+        const screenshot = await captureScreenshot(this.page);
+        return { action, screenshot, elementInfo, timestamp };
+      }
+
+      case "assert_text": {
+        const elementInfo = await this.getElementAtPoint(action.x, action.y);
+        if (!elementInfo) {
+          throw new Error(`No element found at (${action.x}, ${action.y})`);
+        }
+        const locator = this.page.locator(elementInfo.selector).first();
+        const text = (await locator.textContent()) || "";
+        if (!text.includes(action.text)) {
+          throw new Error(
+            `Expected text "${action.text}" not found at (${action.x}, ${action.y})`
+          );
+        }
+        const screenshot = await captureScreenshot(this.page);
+        return { action, screenshot, elementInfo, timestamp };
+      }
+
         case "screenshot":
           // Just return the screenshot
           break;

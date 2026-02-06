@@ -8,6 +8,7 @@ import {
   getViewportSize,
 } from "../browser/screenshot.js";
 import { ComputerUseProvider } from "../providers/index.js";
+import type { TokenUsage } from "../providers/base.js";
 import {
   INDENT_LEVELS,
   color,
@@ -52,6 +53,15 @@ export class AgenticTester {
   private executor: BrowserExecutor;
   private options: AgenticTesterOptions;
   private lastFailure?: { error: string; screenshot?: Buffer; action?: Action };
+  private aiStepCount = 0;
+  private actionCount = 0;
+  private hasUsage = false;
+  private usageTotals: Required<TokenUsage> = {
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    imageTokens: 0,
+  };
 
   constructor(
     page: Page,
@@ -125,6 +135,7 @@ export class AgenticTester {
         if (!action) {
           const reason = "No actions returned from AI";
           logLine(INDENT_LEVELS.step, `${statusLabel("fail")} Test failed: ${reason}`);
+          this.logRunStats();
           return {
             success: false,
             steps,
@@ -150,6 +161,7 @@ export class AgenticTester {
         if (action.type !== "done" && this.isRepeatedAction(actionHistory, action, 3)) {
           const reason = "Repeated same action without progress";
           logLine(INDENT_LEVELS.step, `${statusLabel("fail")} Test failed: ${reason}`);
+          this.logRunStats();
           return {
             success: false,
             steps,
@@ -168,6 +180,7 @@ export class AgenticTester {
                 : color.red("☒ TEST FAILED")
             }: ${doneAction.reason}`
           );
+          this.logRunStats();
           return {
             success: doneAction.success,
             steps,
@@ -192,6 +205,7 @@ export class AgenticTester {
           timestamp: result.timestamp,
         };
         steps.push(step);
+        this.actionCount += 1;
         actionHistory.push({ action, reasoning, error: result.error });
 
         if (result.error) {
@@ -211,6 +225,7 @@ export class AgenticTester {
         INDENT_LEVELS.step,
         `${statusLabel("fail")} Max steps (${this.options.maxSteps}) reached`
       );
+      this.logRunStats();
       return {
         success: false,
         steps,
@@ -219,6 +234,7 @@ export class AgenticTester {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       logLine(INDENT_LEVELS.step, `${statusLabel("fail")} Error: ${errorMessage}`);
+      this.logRunStats();
       return {
         success: false,
         steps,
@@ -234,7 +250,16 @@ export class AgenticTester {
     return steps.map((step) => ({
       action: step.action.type,
       selector: step.elementInfo?.selector,
-      value: "text" in step.action ? (step.action as { text: string }).text : undefined,
+      value:
+        "text" in step.action
+          ? (step.action as { text: string }).text
+          : step.action.type === "assert_visible"
+            ? step.elementInfo?.text ||
+              step.elementInfo?.ariaLabel ||
+              step.elementInfo?.name ||
+              step.elementInfo?.placeholder ||
+              undefined
+            : undefined,
       reasoning: step.reasoning,
     }));
   }
@@ -264,6 +289,8 @@ export class AgenticTester {
         viewport: params.viewport,
         lastFailureText: failureText,
       });
+      this.aiStepCount += 1;
+      this.recordUsage(result.usage);
       clearTimeout(switchTimer);
       spinner.update("AI is thinking...");
       spinner.stop();
@@ -309,7 +336,8 @@ export class AgenticTester {
     actions?: Action[];
     reasoning: string;
     rawResponse?: string;
-  }): { actions: Action[]; reasoning: string; rawResponse?: string } {
+    usage?: TokenUsage;
+  }): { actions: Action[]; reasoning: string; rawResponse?: string; usage?: TokenUsage } {
     const fallback: Action = {
       type: "done",
       success: false,
@@ -322,6 +350,7 @@ export class AgenticTester {
       actions: doneIndex >= 0 ? actions.slice(0, doneIndex + 1) : actions,
       reasoning: result.reasoning,
       rawResponse: result.rawResponse,
+      usage: result.usage,
     };
   }
 
@@ -367,6 +396,10 @@ export class AgenticTester {
         return `${action.type}:${action.ms}`;
       case "done":
         return `${action.type}:${action.success}:${action.reason}`;
+      case "assert_visible":
+        return `${action.type}:${action.x},${action.y}`;
+      case "assert_text":
+        return `${action.type}:${action.x},${action.y}:${action.text ?? ""}`;
       default:
         return `${action.type}`;
     }
@@ -401,12 +434,60 @@ export class AgenticTester {
         return `scroll ${action.direction} ${action.amount ?? 100}px at (${action.x}, ${action.y})`;
       case "wait":
         return `wait ${action.ms}ms`;
+      case "assert_visible":
+        return `assert visible at (${action.x}, ${action.y})`;
+      case "assert_text":
+        return `assert text at (${action.x}, ${action.y})`;
       case "screenshot":
         return "capture screenshot";
       case "done":
         return `done (${action.success ? "success" : "failure"})`;
       default:
         return "unknown action";
+    }
+  }
+
+  private recordUsage(usage?: TokenUsage): void {
+    if (!usage) return;
+    if (typeof usage.inputTokens === "number") {
+      this.usageTotals.inputTokens += usage.inputTokens;
+      this.hasUsage = true;
+    }
+    if (typeof usage.outputTokens === "number") {
+      this.usageTotals.outputTokens += usage.outputTokens;
+      this.hasUsage = true;
+    }
+    if (typeof usage.totalTokens === "number") {
+      this.usageTotals.totalTokens += usage.totalTokens;
+      this.hasUsage = true;
+    }
+    if (typeof usage.imageTokens === "number") {
+      this.usageTotals.imageTokens += usage.imageTokens;
+      this.hasUsage = true;
+    }
+  }
+
+  private logRunStats(): void {
+    logLine(
+      INDENT_LEVELS.step,
+      `${statusLabel("info")} AI steps: ${this.aiStepCount}, actions: ${this.actionCount}`
+    );
+    if (!this.hasUsage) return;
+    const parts: string[] = [];
+    if (this.usageTotals.inputTokens > 0) {
+      parts.push(`input ${this.usageTotals.inputTokens}`);
+    }
+    if (this.usageTotals.outputTokens > 0) {
+      parts.push(`output ${this.usageTotals.outputTokens}`);
+    }
+    if (this.usageTotals.totalTokens > 0) {
+      parts.push(`total ${this.usageTotals.totalTokens}`);
+    }
+    if (this.usageTotals.imageTokens > 0) {
+      parts.push(`image ${this.usageTotals.imageTokens}`);
+    }
+    if (parts.length > 0) {
+      logLine(INDENT_LEVELS.step, `${statusLabel("info")} Tokens: ${parts.join(", ")}`);
     }
   }
 }

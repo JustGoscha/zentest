@@ -9,6 +9,7 @@ export {
   ProviderType,
   GetNextActionParams,
   GetNextActionResult,
+  TokenUsage,
 } from "./base.js";
 
 /**

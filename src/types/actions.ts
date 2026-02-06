@@ -53,13 +53,19 @@ export type ControlAction =
   | { type: "wait"; ms: number }
   | { type: "done"; success: boolean; reason: string };
 
+// Assertion actions
+export type AssertAction =
+  | { type: "assert_visible"; x: number; y: number }
+  | { type: "assert_text"; x: number; y: number; text: string };
+
 // Union of all action types
 export type Action =
   | MouseAction
   | ClickButtonAction
   | KeyboardAction
   | ScrollAction
-  | ControlAction;
+  | ControlAction
+  | AssertAction;
 
 /**
  * Information about an element at a given coordinate

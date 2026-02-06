@@ -26,6 +26,15 @@ export interface GetNextActionResult {
   reasoning: string;
   /** Raw response text from the provider (verbatim) */
   rawResponse?: string;
+  /** Optional usage metrics from the provider */
+  usage?: TokenUsage;
+}
+
+export interface TokenUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  imageTokens?: number;
 }
 
 /**
