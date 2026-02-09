@@ -345,8 +345,8 @@ export class TestBuilder {
     }
 
     // 6. Never fall back to CSS selectors for inputs/buttons
-    // For other elements, only use selector if it's not generic
-    if (info.tagName !== "input" && info.tagName !== "button" && info.selector && !this.isGenericSelector(info.selector)) {
+    // For other elements, only use selector if it's not just the tag name
+    if (info.tagName !== "input" && info.tagName !== "button" && info.selector && info.selector !== info.tagName) {
       return `page.locator('${this.escapeString(info.selector)}')`;
     }
 
@@ -380,15 +380,6 @@ export class TestBuilder {
       default:
         return null;
     }
-  }
-
-
-  /**
-   * Check if selector is a generic tag name (not useful as locator)
-   */
-  private isGenericSelector(selector: string): boolean {
-    const genericTags = /^(p|h1|h2|h3|h4|h5|h6|div|span|a|button|input|textarea|label|form|section|article|header|footer|nav|main|aside)$/i;
-    return genericTags.test(selector);
   }
 
   private normalizeKeyCombo(rawKey: string): string {
