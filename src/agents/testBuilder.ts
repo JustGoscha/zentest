@@ -49,12 +49,16 @@ export class TestBuilder {
     ];
 
     const seenAssertions = new Set<string>();
+    const hasTextAssertion = steps.some((s) => s.action.type === "assert_text");
     
     for (const step of steps) {
       const code = this.stepToCode(step);
       if (code) {
         // Deduplicate identical assertions
-        const isAssertion = step.action.type === 'assert_visible' || step.action.type === 'assert_text';
+        const isAssertion = step.action.type === "assert_visible" || step.action.type === "assert_text";
+        if (hasTextAssertion && step.action.type === "assert_visible") {
+          continue; // Prefer text assertions over visibility-only checks
+        }
         if (isAssertion && seenAssertions.has(code)) {
           continue; // Skip duplicate assertion
         }
@@ -147,12 +151,16 @@ export class TestBuilder {
     }
 
     const seenAssertions = new Set<string>();
+    const hasTextAssertion = steps.some((s) => s.action.type === "assert_text");
 
     for (const step of steps) {
       const code = this.stepToCode(step);
       if (code) {
         // Deduplicate identical assertions
-        const isAssertion = step.action.type === 'assert_visible' || step.action.type === 'assert_text';
+        const isAssertion = step.action.type === "assert_visible" || step.action.type === "assert_text";
+        if (hasTextAssertion && step.action.type === "assert_visible") {
+          continue; // Prefer text assertions over visibility-only checks
+        }
         if (isAssertion && seenAssertions.has(code)) {
           continue; // Skip duplicate assertion
         }
@@ -249,8 +257,7 @@ export class TestBuilder {
         if (locator) {
           return `await expect(${locator}).toBeVisible();`;
         }
-        // Fallback: check element exists at coordinates
-        return `await expect(page.locator('body')).toBeVisible(); // assert_visible at (${step.action.x}, ${step.action.y})`;
+        return null;
       }
 
       case "assert_text": {
@@ -278,8 +285,7 @@ export class TestBuilder {
 
   /**
    * Build the smartest Playwright locator from ElementInfo
-   * Priority: data-testid > role+name > label > placeholder > text > id
-   * NEVER use CSS selectors for inputs/buttons - always use getByRole/getByLabel/getByPlaceholder
+   * Priority: data-testid > semantic input locators > native tag+text > role+name > text
    */
   private buildLocator(info: ElementInfo | undefined, action: Action): string | null {
     if (!info) {
@@ -323,31 +329,25 @@ export class TestBuilder {
       return null;
     }
 
-    // 3. role + accessible name - Playwright's recommended approach for other elements
-    // name uses accessible name which is the button's text content (when no aria-label)
+    // 3. Native tag+text for buttons/links to avoid collisions with custom [role] containers
+    const nativeTagLocator = this.buildNativeTagLocator(info);
+    if (nativeTagLocator) {
+      return nativeTagLocator;
+    }
+
+    // 4. role + accessible name fallback for other elements
     const role = info.role || this.inferRoleFromTagName(info.tagName);
     if (role) {
-      const accessibleName = info.ariaLabel || info.name || info.text || null;
+      const accessibleName = this.getPreferredAccessibleName(info, role);
       if (accessibleName) {
-        // Use exact: true to avoid matching multiple elements with similar text
-        return `page.getByRole('${role}', { name: '${this.escapeString(accessibleName)}', exact: true })`;
+        const exact = this.shouldUseExactRoleMatch(role, info, accessibleName);
+        return `page.getByRole('${role}', { name: '${this.escapeString(accessibleName)}', exact: ${exact} })`;
       }
     }
 
-    // 4. text content - for non-interactive elements or when no better option
+    // 5. text content - for non-interactive elements or when no better option
     if (info.text) {
       return `page.getByText('${this.escapeString(info.text)}', { exact: true })`;
-    }
-
-    // 5. id - stable but not semantic (only for non-input elements)
-    if (info.id) {
-      return `page.locator('#${info.id}')`;
-    }
-
-    // 6. Never fall back to CSS selectors for inputs/buttons
-    // For other elements, only use selector if it's not just the tag name
-    if (info.tagName !== "input" && info.tagName !== "button" && info.selector && info.selector !== info.tagName) {
-      return `page.locator('${this.escapeString(info.selector)}')`;
     }
 
     return null;
@@ -380,6 +380,77 @@ export class TestBuilder {
       default:
         return null;
     }
+  }
+
+  private getPreferredAccessibleName(info: ElementInfo, role: string): string | null {
+    const raw = info.ariaLabel || info.name || info.text || null;
+    if (!raw) return null;
+
+    // Link cards often include metadata (date/duration/counters) in the full text content.
+    // Prefer the likely title segment so generated locators stay readable and resilient.
+    if (role === "link" && !info.ariaLabel) {
+      const compact = raw.replace(/\s+/g, " ").trim();
+      const titleOnly = this.extractLikelyLinkTitle(compact);
+      if (titleOnly) return titleOnly;
+      return compact;
+    }
+
+    return raw;
+  }
+
+  private buildNativeTagLocator(info: ElementInfo): string | null {
+    const tag = info.tagName.toLowerCase();
+    if (tag !== "button" && tag !== "a") {
+      return null;
+    }
+
+    const role = info.role || this.inferRoleFromTagName(tag);
+    if (!role) {
+      return null;
+    }
+
+    const accessibleName = this.getPreferredAccessibleName(info, role);
+    if (!accessibleName) {
+      return null;
+    }
+
+    return `page.locator('${tag}', { hasText: '${this.escapeString(accessibleName)}' }).first()`;
+  }
+
+  private shouldUseExactRoleMatch(
+    role: string,
+    info: ElementInfo,
+    accessibleName: string
+  ): boolean {
+    if (role === "link" && !info.ariaLabel) {
+      return false;
+    }
+
+    return accessibleName.length <= 80;
+  }
+
+  private extractLikelyLinkTitle(text: string): string | null {
+    const monthRegex =
+      /\s(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s+\d{4},/;
+    const monthMatch = text.match(monthRegex);
+    if (monthMatch?.index && monthMatch.index > 0) {
+      return text.slice(0, monthMatch.index).trim();
+    }
+
+    const bulletParts = text
+      .split(" • ")
+      .map((part) => part.trim())
+      .filter(Boolean);
+    if (bulletParts.length > 1) {
+      return bulletParts[0];
+    }
+
+    const counterMatch = text.match(/\s+\d+\s*\/\s*\d+\s*$/);
+    if (counterMatch?.index && counterMatch.index > 0) {
+      return text.slice(0, counterMatch.index).trim();
+    }
+
+    return text || null;
   }
 
   private normalizeKeyCombo(rawKey: string): string {

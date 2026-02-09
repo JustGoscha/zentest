@@ -12,6 +12,7 @@ import {
 import { createProvider, ComputerUseProvider } from "../providers/index.js";
 import { AgenticTester } from "../agents/agenticTester.js";
 import { TestBuilder, TestResult } from "../agents/testBuilder.js";
+import { TestHealer } from "../agents/testHealer.js";
 import {
   INDENT_LEVELS,
   color,
@@ -24,6 +25,7 @@ import { init } from "./init.js";
 
 interface RunOptions {
   agentic?: boolean;
+  heal?: boolean;
   env?: string;
   headless?: boolean;
   headed?: boolean;
@@ -250,7 +252,82 @@ async function runTestFile(
     if (ranStatic) {
       passed = testSuite.tests.length;
     } else {
-      failed = testSuite.tests.length;
+      // --- Self-healing: re-run suite agentically and regenerate static tests (unless --no-heal) ---
+      if (options.heal === false) {
+        failed = testSuite.tests.length;
+        logLine(
+          INDENT_LEVELS.step,
+          `${statusLabel("info")} Self-healing disabled (--no-heal)`
+        );
+      } else {
+        logLine(
+          INDENT_LEVELS.step,
+          `${statusLabel("info")} Healing: re-running suite agentically...`
+        );
+
+        const healPage = await context.newPage();
+        try {
+          const healer = new TestHealer(healPage, baseUrl, agenticProvider, {
+            maxSteps: config.maxSteps,
+            viewport: config.viewport,
+            verbose: options.verbose,
+          });
+
+          const healResult = await healer.healSuite(testSuite);
+
+          if (healResult.testResults.length > 0) {
+            // Regenerate suite-level static test file
+            if (!fs.existsSync(staticTestsDir)) {
+              fs.mkdirSync(staticTestsDir, { recursive: true });
+            }
+            const builder = new TestBuilder(suiteName, "");
+            const testCode = builder.generateSuite(
+              healResult.testResults,
+              testSuite
+            );
+            fs.writeFileSync(staticTestPath, testCode);
+            logLine(
+              INDENT_LEVELS.step,
+              `${statusLabel("check")} Healer regenerated static test: ${staticTestPath}`
+            );
+
+            // Verify the regenerated static tests actually run
+            logLine(
+              INDENT_LEVELS.step,
+              `${statusLabel("info")} Verifying regenerated static tests...`
+            );
+            const verified = await runStaticTest(
+              staticTestPath,
+              baseUrl,
+              headless
+            );
+            if (verified) {
+              passed = testSuite.tests.length;
+              failed = 0;
+              logLine(
+                INDENT_LEVELS.step,
+                `${statusLabel("check")} Healed static tests verified`
+              );
+            } else {
+              passed = healResult.passed;
+              failed = testSuite.tests.length - healResult.passed;
+              logLine(
+                INDENT_LEVELS.step,
+                `${statusLabel("fail")} Regenerated static tests still fail`
+              );
+            }
+          } else {
+            // Agentic healing produced no results at all
+            failed = testSuite.tests.length;
+            logLine(
+              INDENT_LEVELS.step,
+              `${statusLabel("fail")} Healer failed: agentic run produced no passing tests`
+            );
+          }
+        } finally {
+          await healPage.close();
+        }
+      }
     }
   }
 

@@ -209,7 +209,7 @@ export class OpenAIProvider implements ComputerUseProvider {
           x: Number(a.x) || 0,
           y: Number(a.y) || 0,
           direction: a.direction === "up" ? "up" : "down",
-          amount: Number(a.amount) || 100,
+          amount: Math.max(200, Number(a.amount) || 0),
         };
 
       case "wait":

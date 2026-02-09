@@ -29,6 +29,7 @@ program
   .command("run [suite]")
   .description("Run tests")
   .option("--agentic", "Force agentic mode (skip static tests)")
+  .option("--no-heal", "Disable self-healing when static tests fail")
   .option("--verbose", "Log full reasoning and tool use")
   .option("--env <environment>", "Run against specific environment")
   .option("--headless", "Run browser in headless mode")
@@ -38,6 +39,7 @@ program
 // Default action: auto-init XOR auto-run (with same options as run)
 program
   .option("--agentic", "Force agentic mode (skip static tests)")
+  .option("--no-heal", "Disable self-healing when static tests fail")
   .option("--verbose", "Log full reasoning and tool use")
   .option("--env <environment>", "Run against specific environment")
   .option("--headless", "Run browser in headless mode")

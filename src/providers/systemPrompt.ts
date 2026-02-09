@@ -80,7 +80,8 @@ Your task is to complete the following test:
 ${historyText}
 
 Based on the current screenshot, decide what action to take next to complete the test.
-When you can verify the test is complete, return BOTH an assertion (assert_visible or assert_text) AND the done action with success: true in the same response.
+When you can verify the test is complete, return BOTH an assertion AND the done action with success: true in the same response.
+Prefer assert_text over assert_visible whenever visible text is available.
 NEVER return just an assertion without the done action when the test can be completed.
 If you cannot complete the test, use the done action with success: false and explain why.
 
@@ -124,6 +125,7 @@ IMPORTANT:
 - Coordinates should be within the viewport (${viewport.width}x${viewport.height})
 - Click on elements that are visible and interactive
 - When the test is complete, return BOTH an assertion AND the done action in the same batch: [assert_text, done]
+- Prefer assert_text over assert_visible whenever visible text is available
 - NEVER return just an assertion without the done action when you can verify the test is complete
 - If you cannot complete the test, use done with success: false
 - Prefer returning multiple "actions" for simple, deterministic sequences (for example: click input → type → click next input → type → click submit)
