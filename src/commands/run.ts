@@ -1,5 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
+import * as readline from "readline";
+import { tmpdir } from "os";
 import { spawn } from "child_process";
 import { chromium, Browser } from "playwright";
 import { parseTestFile } from "../runner/testParser.js";
@@ -23,6 +25,11 @@ import {
 } from "../ui/cliOutput.js";
 import { init } from "./init.js";
 
+interface StaticTestResult {
+  passed: boolean;
+  failedTestName?: string;
+}
+
 interface RunOptions {
   agentic?: boolean;
   heal?: boolean;
@@ -39,6 +46,14 @@ export async function run(suite: string | undefined, options: RunOptions) {
 
   // Auto-initialize if needed
   if (!fs.existsSync(zentestsPath) || !fs.existsSync(configPath)) {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await new Promise<string>((resolve) => {
+      rl.question("zentest is not initialized in this directory. Initialize now? (y/N) ", resolve);
+    });
+    rl.close();
+    if (answer.trim().toLowerCase() !== "y") {
+      process.exit(0);
+    }
     await init();
   }
 
@@ -229,7 +244,7 @@ async function runTestFile(
         }
       }
 
-      // Generate single static test file if we have any successful results
+      // Generate single static test file + steps sidecar if we have any successful results
       if (testResults.length > 0) {
         if (!fs.existsSync(staticTestsDir)) {
           fs.mkdirSync(staticTestsDir, { recursive: true });
@@ -238,6 +253,10 @@ async function runTestFile(
         const builder = new TestBuilder(suiteName, "");
         const testCode = builder.generateSuite(testResults, testSuite);
         fs.writeFileSync(staticTestPath, testCode);
+
+        const stepsPath = staticTestPath.replace(/\.spec\.js$/, ".steps.json");
+        TestBuilder.saveSuiteSteps(stepsPath, testResults);
+
         logLine(
           INDENT_LEVELS.step,
           `${statusLabel("check")} Generated static test: ${staticTestPath}`
@@ -248,11 +267,11 @@ async function runTestFile(
     }
   } else {
     // Run the single combined static test file
-    const ranStatic = await runStaticTest(staticTestPath, baseUrl, headless);
-    if (ranStatic) {
+    const staticResult = await runStaticTest(staticTestPath, baseUrl, headless);
+    if (staticResult.passed) {
       passed = testSuite.tests.length;
     } else {
-      // --- Self-healing: re-run suite agentically and regenerate static tests (unless --no-heal) ---
+      // --- Self-healing: replay passing tests then go agentic from failure (unless --no-heal) ---
       if (options.heal === false) {
         failed = testSuite.tests.length;
         logLine(
@@ -260,10 +279,33 @@ async function runTestFile(
           `${statusLabel("info")} Self-healing disabled (--no-heal)`
         );
       } else {
-        logLine(
-          INDENT_LEVELS.step,
-          `${statusLabel("info")} Healing: re-running suite agentically...`
-        );
+        // Load saved steps sidecar for partial replay
+        const stepsPath = staticTestPath.replace(/\.spec\.js$/, ".steps.json");
+        const savedSteps = TestBuilder.loadSuiteSteps(stepsPath);
+
+        // Find the index of the failed test
+        let failedTestIndex = 0;
+        if (staticResult.failedTestName && savedSteps) {
+          const idx = testSuite.tests.findIndex(
+            (t) => t.name === staticResult.failedTestName
+          );
+          if (idx >= 0) failedTestIndex = idx;
+        }
+
+        const canPartialReplay =
+          savedSteps && failedTestIndex > 0;
+
+        if (canPartialReplay) {
+          logLine(
+            INDENT_LEVELS.step,
+            `${statusLabel("info")} Healing: replaying ${failedTestIndex} passing test(s), then agentic from '${staticResult.failedTestName}'...`
+          );
+        } else {
+          logLine(
+            INDENT_LEVELS.step,
+            `${statusLabel("info")} Healing: re-running suite agentically...`
+          );
+        }
 
         const healPage = await context.newPage();
         try {
@@ -273,10 +315,13 @@ async function runTestFile(
             verbose: options.verbose,
           });
 
-          const healResult = await healer.healSuite(testSuite);
+          const healResult = await healer.healSuite(testSuite, {
+            savedSteps: canPartialReplay ? savedSteps : undefined,
+            failedTestIndex: canPartialReplay ? failedTestIndex : undefined,
+          });
 
           if (healResult.testResults.length > 0) {
-            // Regenerate suite-level static test file
+            // Regenerate suite-level static test file + steps sidecar
             if (!fs.existsSync(staticTestsDir)) {
               fs.mkdirSync(staticTestsDir, { recursive: true });
             }
@@ -286,6 +331,7 @@ async function runTestFile(
               testSuite
             );
             fs.writeFileSync(staticTestPath, testCode);
+            TestBuilder.saveSuiteSteps(stepsPath, healResult.testResults);
             logLine(
               INDENT_LEVELS.step,
               `${statusLabel("check")} Healer regenerated static test: ${staticTestPath}`
@@ -301,7 +347,7 @@ async function runTestFile(
               baseUrl,
               headless
             );
-            if (verified) {
+            if (verified.passed) {
               passed = testSuite.tests.length;
               failed = 0;
               logLine(
@@ -344,7 +390,7 @@ async function runStaticTest(
   staticTestPath: string,
   baseUrl: string,
   headless: boolean
-): Promise<boolean> {
+): Promise<StaticTestResult> {
   const cwd = process.cwd();
   const cliPath = path.join(
     cwd,
@@ -359,7 +405,7 @@ async function runStaticTest(
       INDENT_LEVELS.step,
       `${statusLabel("fail")} Playwright Test not found at ${cliPath}`
     );
-    return false;
+    return { passed: false };
   }
 
   logLine(
@@ -379,25 +425,76 @@ async function runStaticTest(
     args.push("--headed");
   }
 
+  // Use JSON reporter alongside list to identify which test failed
+  const jsonResultsPath = path.join(
+    tmpdir(),
+    `zentest-results-${Date.now()}.json`
+  );
+  args.push("--reporter=list,json");
+
   const exitCode = await new Promise<number>((resolve) => {
     const child = spawn(process.execPath, args, {
       stdio: "inherit",
       env: {
         ...process.env,
         ZENTEST_BASE_URL: baseUrl,
+        PLAYWRIGHT_JSON_OUTPUT_NAME: jsonResultsPath,
       },
     });
     child.on("exit", (code) => resolve(code ?? 1));
   });
+
+  // Parse JSON results to find which test failed
+  const failedTestName = parseFailedTestName(jsonResultsPath);
+
+  // Clean up temp file
+  try {
+    fs.unlinkSync(jsonResultsPath);
+  } catch {}
 
   if (exitCode === 0) {
     logLine(
       INDENT_LEVELS.step,
       `${statusLabel("check")} Static test passed`
     );
-    return true;
+    return { passed: true };
   }
 
-  logLine(INDENT_LEVELS.step, `${statusLabel("fail")} Static test failed`);
-  return false;
+  if (failedTestName) {
+    logLine(
+      INDENT_LEVELS.step,
+      `${statusLabel("fail")} Static test failed at: ${failedTestName}`
+    );
+  } else {
+    logLine(INDENT_LEVELS.step, `${statusLabel("fail")} Static test failed`);
+  }
+  return { passed: false, failedTestName };
+}
+
+/**
+ * Parse Playwright JSON reporter output to find the first failed test name.
+ */
+function parseFailedTestName(jsonPath: string): string | undefined {
+  try {
+    const data = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
+    const specs: Array<{ title: string; ok: boolean }> = [];
+
+    function collectSpecs(suite: { specs?: Array<{ title: string; ok: boolean }>; suites?: typeof suite[] }) {
+      for (const spec of suite.specs || []) {
+        specs.push({ title: spec.title, ok: spec.ok });
+      }
+      for (const child of suite.suites || []) {
+        collectSpecs(child);
+      }
+    }
+
+    for (const suite of data.suites || []) {
+      collectSpecs(suite);
+    }
+
+    const failed = specs.find((s) => !s.ok);
+    return failed?.title;
+  } catch {
+    return undefined;
+  }
 }

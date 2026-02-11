@@ -1,9 +1,14 @@
+import * as fs from "fs";
 import { Test, TestSuite } from "../runner/testParser.js";
 import { RecordedStep, Action, ElementInfo } from "../types/actions.js";
 
 export interface TestResult {
   test: Test;
   steps: RecordedStep[];
+}
+
+export interface SerializedSuiteSteps {
+  tests: Array<{ name: string; steps: RecordedStep[] }>;
 }
 
 /**
@@ -18,6 +23,36 @@ export class TestBuilder {
   constructor(suiteName: string, testName: string) {
     this.suiteName = suiteName;
     this.testName = testName;
+  }
+
+  /**
+   * Save recorded steps as a JSON sidecar file alongside the .spec.js.
+   * Used by the healer to replay passing tests instead of re-running them agentically.
+   */
+  static saveSuiteSteps(stepsPath: string, testResults: TestResult[]): void {
+    const serializable: SerializedSuiteSteps = {
+      tests: testResults.map(({ test, steps }) => ({
+        name: test.name,
+        // Strip screenshot buffers — they can't be JSON-serialized
+        steps: steps.map(({ screenshot, ...rest }) => rest),
+      })),
+    };
+    fs.writeFileSync(stepsPath, JSON.stringify(serializable, null, 2));
+  }
+
+  /**
+   * Load previously saved suite steps from a JSON sidecar file.
+   * Returns null if the file doesn't exist or can't be parsed.
+   */
+  static loadSuiteSteps(
+    stepsPath: string
+  ): SerializedSuiteSteps | null {
+    try {
+      const raw = fs.readFileSync(stepsPath, "utf-8");
+      return JSON.parse(raw) as SerializedSuiteSteps;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -41,7 +76,7 @@ export class TestBuilder {
       ``,
       ...this.buildDescriptionComment(test.description),
       `test('${test.name}', async ({ page }) => {`,
-      `  test.setTimeout(120_000);`,
+      `  test.setTimeout(20_000);`,
       `  const zentestConfig = await loadZentestConfig();`,
       `  const envName = process.env.ZENTEST_ENV;`,
       `  const envUrl = envName ? zentestConfig.environments?.[envName]?.url : undefined;`,
@@ -199,7 +234,7 @@ export class TestBuilder {
     // Add description comment
     lines.push(...this.buildDescriptionComment(test.description).map(line => `  ${line}`));
     lines.push(`  test('${test.name}', async () => {`);
-    lines.push(`    test.setTimeout(120_000);`);
+    lines.push(`    test.setTimeout(20_000);`);
 
     // Only navigate on first test
     if (navigateFirst) {

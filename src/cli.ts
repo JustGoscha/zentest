@@ -2,6 +2,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import * as readline from "readline";
 import { config as loadEnv } from "dotenv";
 import { Command } from "commander";
 import { init } from "./commands/init.js";
@@ -50,8 +51,16 @@ program
     const zentestsPath = path.join(cwd, "zentests");
     const configPath = path.join(cwd, "zentest.config.js");
     
-    // If not initialized, run init and exit
+    // If not initialized, ask whether to run init
     if (!fs.existsSync(zentestsPath) || !fs.existsSync(configPath)) {
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      const answer = await new Promise<string>((resolve) => {
+        rl.question("zentest is not initialized in this directory. Initialize now? (y/N) ", resolve);
+      });
+      rl.close();
+      if (answer.trim().toLowerCase() !== "y") {
+        return;
+      }
       await init();
       return;
     }
