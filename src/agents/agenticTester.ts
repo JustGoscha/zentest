@@ -2,6 +2,7 @@ import { Page } from "playwright";
 import { Test } from "../runner/testParser.js";
 import { Action, ActionHistoryEntry, RecordedStep, ElementInfo } from "../types/actions.js";
 import { BrowserExecutor } from "../browser/executor.js";
+import type { MCPExecutor } from "../mcp/mcpExecutor.js";
 import {
   captureScreenshot,
   ensureViewport,
@@ -43,7 +44,7 @@ export class AgenticTester {
   private page: Page;
   private baseUrl: string;
   private provider: ComputerUseProvider;
-  private executor: BrowserExecutor;
+  private executor: BrowserExecutor | MCPExecutor;
   private options: AgenticTesterOptions;
   private lastFailure?: { error: string; screenshot?: Buffer; action?: Action };
   private aiStepCount = 0;
@@ -60,12 +61,13 @@ export class AgenticTester {
     page: Page,
     baseUrl: string,
     provider: ComputerUseProvider,
-    options: Partial<AgenticTesterOptions> = {}
+    options: Partial<AgenticTesterOptions> = {},
+    mcpExecutor?: MCPExecutor
   ) {
     this.page = page;
     this.baseUrl = baseUrl;
     this.provider = provider;
-    this.executor = new BrowserExecutor(page);
+    this.executor = mcpExecutor || new BrowserExecutor(page);
     this.options = {
       maxSteps: options.maxSteps || 50,
       viewport: options.viewport || { width: 1280, height: 720 },
@@ -199,6 +201,7 @@ export class AgenticTester {
           reasoning,
           elementInfo: result.elementInfo,
           screenshot: result.screenshot,
+          generatedCode: "generatedCode" in result ? (result as any).generatedCode : undefined,
           error: result.error,
           timestamp: result.timestamp,
         };

@@ -15,6 +15,8 @@ import { createProvider, ComputerUseProvider } from "../providers/index.js";
 import { AgenticTester } from "../agents/agenticTester.js";
 import { TestBuilder, TestResult } from "../agents/testBuilder.js";
 import { TestHealer } from "../agents/testHealer.js";
+import { MCPBrowserClient } from "../mcp/mcpClient.js";
+import { MCPExecutor } from "../mcp/mcpExecutor.js";
 import {
   INDENT_LEVELS,
   color,
@@ -77,6 +79,9 @@ export async function run(suite: string | undefined, options: RunOptions) {
   logLine(INDENT_LEVELS.suite, `  - Healer:  ${config.models.healerModel}`);
   if (options.agentic) {
     logLine(INDENT_LEVELS.suite, `${statusLabel("warn")} Mode: Agentic (forced)`);
+  }
+  if (config.automationMode === "mcp") {
+    logLine(INDENT_LEVELS.suite, `${statusLabel("info")} Automation: MCP (Playwright MCP tools)`);
   }
   if (options.verbose) {
     logLine(INDENT_LEVELS.suite, `${statusLabel("info")} Verbose: on`);
@@ -214,6 +219,14 @@ async function runTestFile(
     const testResults: TestResult[] = [];
     let isFirstTest = true;
 
+    // Set up MCP executor if configured
+    let mcpClient: MCPBrowserClient | undefined;
+    let mcpExecutor: MCPExecutor | undefined;
+    if (config.automationMode === "mcp") {
+      mcpClient = await MCPBrowserClient.create(context);
+      mcpExecutor = new MCPExecutor(page, mcpClient);
+    }
+
     try {
       for (const test of testSuite.tests) {
         console.log("");
@@ -225,7 +238,7 @@ async function runTestFile(
           maxSteps: config.maxSteps,
           viewport: config.viewport,
           verbose: options.verbose,
-        });
+        }, mcpExecutor);
 
         const result = await tester.run(test, { skipNavigation: !isFirstTest });
         isFirstTest = false;
@@ -250,19 +263,20 @@ async function runTestFile(
           fs.mkdirSync(staticTestsDir, { recursive: true });
         }
 
-        const builder = new TestBuilder(suiteName, "");
+        const builder = new TestBuilder(suiteName, "", config.automationMode);
         const testCode = builder.generateSuite(testResults, testSuite);
         fs.writeFileSync(staticTestPath, testCode);
 
         const stepsPath = staticTestPath.replace(/\.spec\.js$/, ".steps.json");
-        TestBuilder.saveSuiteSteps(stepsPath, testResults);
+        TestBuilder.saveSuiteSteps(stepsPath, testResults, config.automationMode);
 
         logLine(
           INDENT_LEVELS.step,
-          `${statusLabel("check")} Generated static test: ${staticTestPath}`
+          `${statusLabel("check")} Generated static test (${config.automationMode}): ${staticTestPath}`
         );
       }
     } finally {
+      if (mcpClient) await mcpClient.close();
       await page.close();
     }
   } else {
@@ -308,12 +322,18 @@ async function runTestFile(
         }
 
         const healPage = await context.newPage();
+        let healMcpClient: MCPBrowserClient | undefined;
+        let healMcpExecutor: MCPExecutor | undefined;
+        if (config.automationMode === "mcp") {
+          healMcpClient = await MCPBrowserClient.create(context);
+          healMcpExecutor = new MCPExecutor(healPage, healMcpClient);
+        }
         try {
           const healer = new TestHealer(healPage, baseUrl, agenticProvider, {
             maxSteps: config.maxSteps,
             viewport: config.viewport,
             verbose: options.verbose,
-          });
+          }, healMcpExecutor);
 
           const healResult = await healer.healSuite(testSuite, {
             savedSteps: canPartialReplay ? savedSteps : undefined,
@@ -325,13 +345,13 @@ async function runTestFile(
             if (!fs.existsSync(staticTestsDir)) {
               fs.mkdirSync(staticTestsDir, { recursive: true });
             }
-            const builder = new TestBuilder(suiteName, "");
+            const builder = new TestBuilder(suiteName, "", config.automationMode);
             const testCode = builder.generateSuite(
               healResult.testResults,
               testSuite
             );
             fs.writeFileSync(staticTestPath, testCode);
-            TestBuilder.saveSuiteSteps(stepsPath, healResult.testResults);
+            TestBuilder.saveSuiteSteps(stepsPath, healResult.testResults, config.automationMode);
             logLine(
               INDENT_LEVELS.step,
               `${statusLabel("check")} Healer regenerated static test: ${staticTestPath}`
@@ -355,11 +375,23 @@ async function runTestFile(
                 `${statusLabel("check")} Healed static tests verified`
               );
             } else {
-              passed = healResult.passed;
-              failed = testSuite.tests.length - healResult.passed;
+              // Static verification failed — the generated code is broken
+              // even though agentic tests passed. Count based on verification.
+              const verifiedFailed = verified.failedTestName;
+              if (verifiedFailed) {
+                const failIdx = testSuite.tests.findIndex(
+                  (t) => t.name === verifiedFailed
+                );
+                passed = failIdx >= 0 ? failIdx : 0;
+                failed = testSuite.tests.length - passed;
+              } else {
+                // Can't identify which test failed — report all as failed
+                passed = 0;
+                failed = testSuite.tests.length;
+              }
               logLine(
                 INDENT_LEVELS.step,
-                `${statusLabel("fail")} Regenerated static tests still fail`
+                `${statusLabel("fail")} Regenerated static tests still fail${verifiedFailed ? ` at: ${verifiedFailed}` : ""}`
               );
             }
           } else {
@@ -371,6 +403,7 @@ async function runTestFile(
             );
           }
         } finally {
+          if (healMcpClient) await healMcpClient.close();
           await healPage.close();
         }
       }

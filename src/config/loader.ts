@@ -15,6 +15,8 @@ export interface ModelConfig {
   healerModel: string;
 }
 
+export type AutomationMode = "vision" | "mcp";
+
 export interface ZentestConfig {
   baseUrl: string;
   environments: Record<string, { url: string }>;
@@ -32,6 +34,12 @@ export interface ZentestConfig {
   viewport: { width: number; height: number };
   /** Headless mode: "auto" detects CI vs dev, true/false override */
   headless: "auto" | boolean;
+  /**
+   * Automation mode for action execution:
+   * - "vision": Original mode — BrowserExecutor with custom code generation
+   * - "mcp": Uses Playwright MCP tools for execution + auto-generated Playwright code
+   */
+  automationMode: AutomationMode;
 }
 
 const DEFAULT_MODELS: ModelConfig = {
@@ -48,6 +56,7 @@ const DEFAULT_CONFIG: ZentestConfig = {
   maxSteps: 50,
   viewport: { width: 1280, height: 720 },
   headless: "auto",
+  automationMode: "vision",
 };
 
 /**
