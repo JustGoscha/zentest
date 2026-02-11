@@ -13,6 +13,7 @@ export interface TestResult {
 export class TestBuilder {
   private suiteName: string;
   private testName: string;
+  private readonly postClickWaitMs = 250;
 
   constructor(suiteName: string, testName: string) {
     this.suiteName = suiteName;
@@ -36,12 +37,15 @@ export class TestBuilder {
       `  }`,
       `}`,
       ``,
+      ...this.buildReplayHelpers(),
+      ``,
       ...this.buildDescriptionComment(test.description),
       `test('${test.name}', async ({ page }) => {`,
+      `  test.setTimeout(120_000);`,
       `  const zentestConfig = await loadZentestConfig();`,
       `  const envName = process.env.ZENTEST_ENV;`,
       `  const envUrl = envName ? zentestConfig.environments?.[envName]?.url : undefined;`,
-      `  const baseUrl = envUrl || zentestConfig.baseUrl;`,
+      `  const baseUrl = envUrl || process.env.ZENTEST_BASE_URL || zentestConfig.baseUrl;`,
       `  if (!baseUrl) {`,
       `    throw new Error('baseUrl is required to run static tests. Set it in zentest.config.js or use ZENTEST_ENV to select an environment.');`,
       `  }`,
@@ -50,8 +54,13 @@ export class TestBuilder {
 
     const seenAssertions = new Set<string>();
     const hasTextAssertion = steps.some((s) => s.action.type === "assert_text");
-    
+
     for (const step of steps) {
+      // Skip steps that errored during the agentic run
+      if (step.error) {
+        continue;
+      }
+
       const code = this.stepToCode(step);
       if (code) {
         // Deduplicate identical assertions
@@ -62,11 +71,11 @@ export class TestBuilder {
         if (isAssertion && seenAssertions.has(code)) {
           continue; // Skip duplicate assertion
         }
-        
+
         if (isAssertion) {
           seenAssertions.add(code);
         }
-        
+
         // Add reasoning as comment
         if (step.reasoning) {
           lines.push(`  // ${step.reasoning.slice(0, 80)}`);
@@ -91,6 +100,8 @@ export class TestBuilder {
       ``,
       ...this.buildConfigLoader(),
       ``,
+      ...this.buildReplayHelpers(),
+      ``,
       `test.describe.serial('${this.escapeString(suite.name)}', () => {`,
       `  let baseUrl;`,
       `  let page;`,
@@ -99,7 +110,7 @@ export class TestBuilder {
       `    const zentestConfig = await loadZentestConfig();`,
       `    const envName = process.env.ZENTEST_ENV;`,
       `    const envUrl = envName ? zentestConfig.environments?.[envName]?.url : undefined;`,
-      `    baseUrl = envUrl || zentestConfig.baseUrl;`,
+      `    baseUrl = envUrl || process.env.ZENTEST_BASE_URL || zentestConfig.baseUrl;`,
       `    if (!baseUrl) {`,
       `      throw new Error('baseUrl is required to run static tests. Set it in zentest.config.js or use ZENTEST_ENV to select an environment.');`,
       `    }`,
@@ -138,12 +149,57 @@ export class TestBuilder {
     ];
   }
 
+  private buildReplayHelpers(): string[] {
+    return [
+      `async function assertVisibleAtPoint(page, x, y) {`,
+      `  const info = await page.evaluate(({ x, y }) => {`,
+      `    const element = document.elementFromPoint(x, y);`,
+      `    if (!element) return null;`,
+      ``,
+      `    const style = window.getComputedStyle(element);`,
+      `    const rect = element.getBoundingClientRect();`,
+      `    const isVisible =`,
+      `      style.visibility !== 'hidden' &&`,
+      `      style.display !== 'none' &&`,
+      `      Number(style.opacity || '1') > 0 &&`,
+      `      rect.width > 0 &&`,
+      `      rect.height > 0;`,
+      ``,
+      `    return {`,
+      `      isVisible,`,
+      `      text: (element.textContent || '').trim(),`,
+      `    };`,
+      `  }, { x, y });`,
+      ``,
+      `  expect(info).not.toBeNull();`,
+      `  expect(info?.isVisible).toBe(true);`,
+      `}`,
+      ``,
+      `async function fillInputByField(page, field, value, exact = true) {`,
+      `  const candidates = [`,
+      `    page.getByLabel(field, { exact }),`,
+      `    page.getByPlaceholder(field, { exact }),`,
+      `    page.getByRole('textbox', { name: field, exact }),`,
+      `  ];`,
+      `  for (const locator of candidates) {`,
+      `    if ((await locator.count()) > 0) {`,
+      `      await locator.first().click();`,
+      `      await locator.first().fill(value);`,
+      `      return;`,
+      `    }`,
+      `  }`,
+      `  throw new Error(\`No input found for field: \${field}\`);`,
+      `}`,
+    ];
+  }
+
   private buildTestBlock(test: Test, steps: RecordedStep[], navigateFirst: boolean): string[] {
     const lines: string[] = [];
 
     // Add description comment
     lines.push(...this.buildDescriptionComment(test.description).map(line => `  ${line}`));
     lines.push(`  test('${test.name}', async () => {`);
+    lines.push(`    test.setTimeout(120_000);`);
 
     // Only navigate on first test
     if (navigateFirst) {
@@ -154,6 +210,11 @@ export class TestBuilder {
     const hasTextAssertion = steps.some((s) => s.action.type === "assert_text");
 
     for (const step of steps) {
+      // Skip steps that errored during the agentic run - they would fail in static replay too
+      if (step.error) {
+        continue;
+      }
+
       const code = this.stepToCode(step);
       if (code) {
         // Deduplicate identical assertions
@@ -211,35 +272,38 @@ export class TestBuilder {
   private stepToCode(step: RecordedStep): string | null {
     switch (step.action.type) {
       case "click": {
-        const locator = this.buildLocator(step.elementInfo, step.action);
-        if (locator) {
-          return `await ${locator}.click();`;
-        }
-        // Fallback to coordinate-based click
-        return `await page.mouse.click(${step.action.x}, ${step.action.y});`;
+        // Replay recorded action exactly.
+        return `await page.mouse.click(${step.action.x}, ${step.action.y}); await page.waitForTimeout(${this.postClickWaitMs});`;
       }
 
       case "click_button": {
-        // Use getByRole with name parameter - name uses accessible name (button text content)
-        // Always use exact: true to avoid matching multiple buttons with similar text
-        return `await page.getByRole('button', { name: '${this.escapeString(step.action.name)}', exact: true }).click();`;
+        const exact = step.action.exact ?? true;
+        const click = `await page.getByRole('button', { name: '${this.escapeString(step.action.name)}', exact: ${exact} }).click();`;
+        // For submit-like buttons, wait for navigation/network to settle
+        const isSubmit = /sign.?in|log.?in|submit|save|confirm|continue|next/i.test(step.action.name);
+        const wait = isSubmit
+          ? ` await page.waitForLoadState('networkidle').catch(() => {}); await page.waitForTimeout(1000);`
+          : ` await page.waitForTimeout(${this.postClickWaitMs});`;
+        return click + wait;
+      }
+
+      case "click_text": {
+        const exact = step.action.exact ?? false;
+        return `await page.getByText('${this.escapeString(step.action.text)}', { exact: ${exact} }).first().click(); await page.waitForTimeout(${this.postClickWaitMs});`;
+      }
+
+      case "select_input": {
+        const exact = step.action.exact ?? true;
+        return `await fillInputByField(page, '${this.escapeString(step.action.field)}', '${this.escapeString(step.action.value)}', ${exact});`;
       }
 
       case "double_click": {
-        const locator = this.buildLocator(step.elementInfo, step.action);
-        if (locator) {
-          return `await ${locator}.dblclick();`;
-        }
-        // Fallback to coordinate-based double click
-        return `await page.mouse.dblclick(${step.action.x}, ${step.action.y});`;
+        // Replay recorded action exactly.
+        return `await page.mouse.dblclick(${step.action.x}, ${step.action.y}); await page.waitForTimeout(${this.postClickWaitMs});`;
       }
 
       case "type": {
-        const locator = this.buildLocator(step.elementInfo, step.action);
-        if (locator) {
-          return `await ${locator}.fill('${this.escapeString(step.action.text)}');`;
-        }
-        // Fallback: type at current focus
+        // Replay recorded action exactly (type into current focus).
         return `await page.keyboard.type('${this.escapeString(step.action.text)}');`;
       }
 
@@ -250,19 +314,18 @@ export class TestBuilder {
         return `await page.mouse.wheel(0, ${(step.action.amount || 100) * (step.action.direction === "up" ? -1 : 1)});`;
 
       case "wait":
+        if (step.action.ms >= 2000) {
+          return `await page.waitForTimeout(${step.action.ms}); await page.waitForLoadState('networkidle').catch(() => {});`;
+        }
         return `await page.waitForTimeout(${step.action.ms});`;
 
       case "assert_visible": {
-        const locator = this.buildLocator(step.elementInfo, step.action);
-        if (locator) {
-          return `await expect(${locator}).toBeVisible();`;
-        }
-        return null;
+        return `await assertVisibleAtPoint(page, ${step.action.x}, ${step.action.y});`;
       }
 
       case "assert_text": {
-        // Use text directly from action
-        return `await expect(page.getByText('${this.escapeString(step.action.text)}', { exact: false })).toBeVisible();`;
+        // Use .first() to avoid strict mode violations when multiple elements match
+        return `await expect(page.getByText('${this.escapeString(step.action.text)}', { exact: false }).first()).toBeVisible({ timeout: 10000 });`;
       }
 
       case "done":

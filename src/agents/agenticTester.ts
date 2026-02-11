@@ -249,6 +249,7 @@ export class AgenticTester {
   }): Promise<{ actions: Action[]; reasoning: string; rawResponse?: string }> {
     const maxRetries = this.options.retryNoResponse ?? 0;
     let attempt = 0;
+    let retryFeedback: string | undefined;
 
     while (true) {
       const screenshot =
@@ -259,7 +260,7 @@ export class AgenticTester {
       }, 150);
       const failureText = this.lastFailure
         ? `${this.formatActionSummary(this.lastFailure.action ?? { type: "done", success: false, reason: "" })} failed with error: ${this.lastFailure.error}`
-        : undefined;
+        : retryFeedback;
       
       const requestParams = {
         screenshot,
@@ -333,10 +334,29 @@ export class AgenticTester {
         return normalized;
       }
 
+      const retryAction = normalized.actions[0];
+      if (
+        retryAction?.type === "done" &&
+        !retryAction.success &&
+        typeof retryAction.reason === "string" &&
+        retryAction.reason.startsWith("Unknown action:")
+      ) {
+        retryFeedback = `You made a mistake in your last response: ${retryAction.reason}. Use only supported action types: click_button, click_text, select_input, click, double_click, type, key, scroll, wait, assert_visible, assert_text, done. Return corrected JSON only.`;
+      } else {
+        retryFeedback = `Your previous response was invalid: ${
+          retryAction &&
+          typeof retryAction === "object" &&
+          "reason" in retryAction &&
+          typeof retryAction.reason === "string"
+            ? retryAction.reason
+            : "Invalid response format"
+        }. Return corrected JSON only.`;
+      }
+
       attempt++;
       logLine(
         INDENT_LEVELS.detail,
-        `${statusLabel("warn")} No response from AI, retrying (${attempt}/${maxRetries})...`
+        `${statusLabel("warn")} Invalid AI response, retrying (${attempt}/${maxRetries})...`
       );
     }
   }
@@ -350,7 +370,8 @@ export class AgenticTester {
     return (
       reason.includes("No response from AI") ||
       reason.includes("Failed to parse AI response") ||
-      reason.includes("Failed to parse response")
+      reason.includes("Failed to parse response") ||
+      reason.includes("Unknown action:")
     );
   }
 
@@ -365,11 +386,32 @@ export class AgenticTester {
       success: false,
       reason: "No action returned",
     };
-    const actions =
+    let actions =
       result.actions && result.actions.length > 0 ? result.actions : [fallback];
     const doneIndex = actions.findIndex((action) => action.type === "done");
+    if (doneIndex >= 0) {
+      actions = actions.slice(0, doneIndex + 1);
+      const doneAction = actions[doneIndex] as { type: "done"; success: boolean };
+      // Strip done(success:false) when batched with other actions - the AI should
+      // not give up in the same batch as performing actions. Let it continue instead.
+      if (!doneAction.success && actions.length > 1) {
+        actions = actions.slice(0, doneIndex);
+      }
+      // Strip done(success:true) when AI's own reasoning says there are more steps
+      if (doneAction.success) {
+        const lower = result.reasoning.toLowerCase();
+        const unfinished = [
+          "still need", "remaining", "more steps", "not yet",
+          "haven't completed", "next step", "continue with",
+          "haven't done", "not complete", "incomplete",
+        ];
+        if (unfinished.some((s) => lower.includes(s))) {
+          actions = actions.slice(0, doneIndex);
+        }
+      }
+    }
     return {
-      actions: doneIndex >= 0 ? actions.slice(0, doneIndex + 1) : actions,
+      actions,
       reasoning: result.reasoning,
       rawResponse: result.rawResponse,
       usage: result.usage,
@@ -403,6 +445,10 @@ export class AgenticTester {
         return `${action.type}:${action.x},${action.y}:${"button" in action ? action.button : ""}`;
       case "click_button":
         return `${action.type}:${action.name}:${action.exact ?? ""}`;
+      case "click_text":
+        return `${action.type}:${action.text}:${action.exact ?? ""}`;
+      case "select_input":
+        return `${action.type}:${action.field}:${action.value}:${action.exact ?? ""}`;
       case "type":
         return `${action.type}:${action.text}`;
       case "key":
@@ -416,7 +462,7 @@ export class AgenticTester {
       case "assert_visible":
         return `${action.type}:${action.x},${action.y}`;
       case "assert_text":
-        return `${action.type}:${action.x},${action.y}:${action.text ?? ""}`;
+        return `${action.type}:${action.text ?? ""}`;
       default:
         return `${action.type}`;
     }
@@ -468,6 +514,10 @@ export class AgenticTester {
         return `drag from (${action.startX}, ${action.startY}) to (${action.endX}, ${action.endY})`;
       case "click_button":
         return `click button "${truncate(action.name, 40)}"${action.exact === false ? " [fuzzy]" : ""}`;
+      case "click_text":
+        return `click text "${truncate(action.text, 40)}"${action.exact === false ? " [fuzzy]" : ""}`;
+      case "select_input":
+        return `fill input "${truncate(action.field, 30)}" with "${truncate(action.value, 20)}"${action.exact === false ? " [fuzzy]" : ""}`;
       case "type":
         return `type "${truncate(action.text, 40)}"`;
       case "key":
@@ -479,7 +529,7 @@ export class AgenticTester {
       case "assert_visible":
         return `assert visible at (${action.x}, ${action.y})`;
       case "assert_text":
-        return `assert text at (${action.x}, ${action.y})`;
+        return `assert text "${truncate(action.text, 50)}"`;
       case "screenshot":
         return "capture screenshot";
       case "done":

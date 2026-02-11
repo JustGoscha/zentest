@@ -1,4 +1,4 @@
-import { Page } from "playwright";
+import { Locator, Page } from "playwright";
 import { Action, ActionResult, ElementInfo } from "../types/actions.js";
 import { captureScreenshot } from "./screenshot.js";
 
@@ -91,11 +91,20 @@ export class BrowserExecutor {
           });
           const elementInfo =
             target?.elementInfo ?? (await this.getElementAtPoint(clickX, clickY));
+          await this.waitForScreenshotJitter();
           const screenshot = await captureScreenshot(this.page);
           return { action, screenshot, elementInfo, timestamp };
         }
 
         case "click_button": {
+          const ambiguousFuzzyLabel = /^(menu|more|icon|button)$/i.test(
+            action.name.trim()
+          );
+          if ((action.exact ?? true) === false && ambiguousFuzzyLabel) {
+            throw new Error(
+              `Ambiguous click_button label "${action.name}". Use click(x,y) for icon-only controls or provide exact label text.`
+            );
+          }
           const locator = this.page.getByRole("button", {
             name: action.name,
             exact: action.exact ?? true,
@@ -106,6 +115,39 @@ export class BrowserExecutor {
           }
           await locator.first().click();
           const elementInfo = await this.getElementInfoFromHandle(handle);
+          await this.waitForScreenshotJitter();
+          const screenshot = await captureScreenshot(this.page);
+          return { action, screenshot, elementInfo, timestamp };
+        }
+
+        case "click_text": {
+          const locator = this.page.getByText(action.text, {
+            exact: action.exact ?? false,
+          });
+          const handle = await locator.first().elementHandle();
+          if (!handle) {
+            throw new Error(`No element found with text: ${action.text}`);
+          }
+          await locator.first().click();
+          const elementInfo = await this.getElementInfoFromHandle(handle);
+          await this.waitForScreenshotJitter();
+          const screenshot = await captureScreenshot(this.page);
+          return { action, screenshot, elementInfo, timestamp };
+        }
+
+        case "select_input": {
+          const locator = await this.findInputLocator(action.field, action.exact ?? true);
+          if (!locator) {
+            throw new Error(`No input found for field: ${action.field}`);
+          }
+          const handle = await locator.first().elementHandle();
+          if (!handle) {
+            throw new Error(`No input handle found for field: ${action.field}`);
+          }
+          await locator.first().click();
+          await locator.first().fill(action.value);
+          const elementInfo = await this.getElementInfoFromHandle(handle);
+          await this.waitForScreenshotJitter();
           const screenshot = await captureScreenshot(this.page);
           return { action, screenshot, elementInfo, timestamp };
         }
@@ -117,6 +159,7 @@ export class BrowserExecutor {
           await this.page.mouse.dblclick(clickX, clickY);
           const elementInfo =
             target?.elementInfo ?? (await this.getElementAtPoint(clickX, clickY));
+          await this.waitForScreenshotJitter();
           const screenshot = await captureScreenshot(this.page);
           return { action, screenshot, elementInfo, timestamp };
         }
@@ -359,6 +402,32 @@ export class BrowserExecutor {
     } catch {
       return undefined;
     }
+  }
+
+  private async findInputLocator(
+    field: string,
+    exact: boolean
+  ): Promise<Locator | null> {
+    const byLabel = this.page.getByLabel(field, { exact });
+    if ((await byLabel.count()) > 0) return byLabel;
+
+    const byPlaceholder = this.page.getByPlaceholder(field, { exact });
+    if ((await byPlaceholder.count()) > 0) return byPlaceholder;
+
+    const byRole = this.page.getByRole("textbox", { name: field, exact });
+    if ((await byRole.count()) > 0) return byRole;
+
+    const escapedField = this.escapeForAttributeSelector(field);
+    const byName = this.page.locator(
+      `input[name="${escapedField}"], textarea[name="${escapedField}"]`
+    );
+    if ((await byName.count()) > 0) return byName;
+
+    return null;
+  }
+
+  private escapeForAttributeSelector(value: string): string {
+    return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   }
 
 

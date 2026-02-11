@@ -33,6 +33,19 @@ export type ClickButtonAction = {
   exact?: boolean;
 };
 
+export type ClickTextAction = {
+  type: "click_text";
+  text: string;
+  exact?: boolean;
+};
+
+export type SelectInputAction = {
+  type: "select_input";
+  field: string;
+  value: string;
+  exact?: boolean;
+};
+
 // Keyboard actions
 export type KeyboardAction =
   | { type: "type"; text: string }
@@ -56,12 +69,14 @@ export type ControlAction =
 // Assertion actions
 export type AssertAction =
   | { type: "assert_visible"; x: number; y: number }
-  | { type: "assert_text"; x: number; y: number; text: string };
+  | { type: "assert_text"; text: string };
 
 // Union of all action types
 export type Action =
   | MouseAction
   | ClickButtonAction
+  | ClickTextAction
+  | SelectInputAction
   | KeyboardAction
   | ScrollAction
   | ControlAction

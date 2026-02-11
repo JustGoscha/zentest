@@ -27,7 +27,7 @@ const PLAYWRIGHT_CONFIG = `import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
   testDir: './zentests/static-tests',
-  timeout: 60000,
+  timeout: 120_000,
   use: {
     // Base URL set via ZENTEST_BASE_URL env variable at runtime
   },
