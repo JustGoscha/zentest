@@ -601,9 +601,22 @@ async function runStaticTest(
       const src = fs.readFileSync(userConfigPath, "utf-8");
       const timeoutMatch = src.match(/timeout\s*:\s*(\d[\d_]*)/);
       if (timeoutMatch) userTimeout = Number(timeoutMatch[1].replace(/_/g, ""));
-      // Extract the use block content (simple heuristic)
-      const useMatch = src.match(/use\s*:\s*\{([^}]*)}/);
-      if (useMatch) userUseBlock = useMatch[1];
+      // Extract the use block content with balanced-brace parsing
+      // (handles nested objects like launchOptions: { args: [...] })
+      const useStart = src.match(/use\s*:\s*\{/);
+      if (useStart && useStart.index !== undefined) {
+        let depth = 1;
+        let i = useStart.index + useStart[0].length;
+        const start = i;
+        while (i < src.length && depth > 0) {
+          if (src[i] === "{") depth++;
+          if (src[i] === "}") depth--;
+          i++;
+        }
+        if (depth === 0) {
+          userUseBlock = src.slice(start, i - 1);
+        }
+      }
     } catch {}
   }
   const tempConfigContent = [
