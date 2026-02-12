@@ -17,6 +17,9 @@ import { TestBuilder, TestResult } from "../agents/testBuilder.js";
 import { TestHealer } from "../agents/testHealer.js";
 import { MCPBrowserClient } from "../mcp/mcpClient.js";
 import { MCPExecutor } from "../mcp/mcpExecutor.js";
+import { CodeExecutor } from "../browser/codeExecutor.js";
+import { RecordedStep } from "../types/actions.js";
+import { replaySteps } from "../runner/stepReplayer.js";
 import {
   color,
   sym,
@@ -88,7 +91,7 @@ export async function run(suite: string | undefined, options: RunOptions) {
   const headerLines = formatHeader(
     envUrl,
     config.provider,
-    config.automationMode === "mcp" ? "mcp" : "vision",
+    config.automationMode,
     headless ? "headless" : "headed"
   );
   for (const line of headerLines) logLine(0, line);
@@ -137,6 +140,14 @@ export async function run(suite: string | undefined, options: RunOptions) {
   const context = await browser.newContext({
     viewport: config.viewport,
   });
+
+  // Force-kill on Ctrl+C
+  const cleanup = () => {
+    browser.close().catch(() => {});
+    process.exit(130);
+  };
+  process.on("SIGINT", cleanup);
+  process.on("SIGTERM", cleanup);
 
   const suiteStartTime = Date.now();
   const summaryRows: TestSummaryRow[] = [];
@@ -237,22 +248,64 @@ async function runTestFile(
   const runAgentic = options.agentic || !hasStaticTest || staticTestsOutdated;
 
   if (runAgentic) {
-    // Run agentic tests
+    // Run agentic tests (with optional step replay for previously-passing tests)
     const page = await context.newPage();
     const testResults: TestResult[] = [];
-    let isFirstTest = true;
 
     let mcpClient: MCPBrowserClient | undefined;
     let mcpExecutor: MCPExecutor | undefined;
+    let codeExecutor: CodeExecutor | undefined;
     if (config.automationMode === "mcp") {
       mcpClient = await MCPBrowserClient.create(context);
       mcpExecutor = new MCPExecutor(page, mcpClient);
+    } else if (config.automationMode === "code") {
+      codeExecutor = new CodeExecutor(page);
+    }
+
+    // Check for saved steps we can replay instead of re-running agentically
+    const savedSteps = TestBuilder.loadSuiteSteps(stepsPath);
+    const savedByName = new Map<string, RecordedStep[]>();
+    if (savedSteps && !options.agentic) {
+      for (const saved of savedSteps.tests) {
+        savedByName.set(saved.name, saved.steps as RecordedStep[]);
+      }
     }
 
     try {
+      let navigated = false;
+
       for (const test of testSuite.tests) {
+        const hasSavedSteps = savedByName.has(test.name);
+
         logBlank();
         logLine(1, formatTestName(test.name));
+
+        // Try replaying saved steps first
+        if (hasSavedSteps) {
+          logLine(2, `${color.cyan(sym.info)} Replaying saved steps...`);
+          if (!navigated) {
+            await page.goto(baseUrl, { waitUntil: "networkidle" });
+            navigated = true;
+          }
+          try {
+            const steps = savedByName.get(test.name)!;
+            await replaySteps(page, steps);
+            logLine(2, `${color.green(sym.pass)} Replay complete`);
+            testResults.push({ test, steps });
+            summaryRows.push({
+              name: test.name,
+              passed: true,
+              durationMs: 0,
+              actionCount: steps.length,
+            });
+            continue;
+          } catch (error) {
+            logLine(2, `${color.yellow(sym.warn)} Replay failed: ${error instanceof Error ? error.message : error}`);
+            logLine(2, color.dim(`${sym.info} Falling back to agentic...`));
+          }
+        }
+
+        // Agentic run for this test
         logLine(2, color.dim(`"${test.description}"`));
         logBlank();
 
@@ -260,10 +313,10 @@ async function runTestFile(
           maxSteps: config.maxSteps,
           viewport: config.viewport,
           verbose: options.verbose,
-        }, mcpExecutor);
+        }, codeExecutor || mcpExecutor);
 
-        const result = await tester.run(test, { skipNavigation: !isFirstTest });
-        isFirstTest = false;
+        const result = await tester.run(test, { skipNavigation: navigated });
+        navigated = true;
 
         // Collect stats
         summaryRows.push({
@@ -342,16 +395,19 @@ async function runTestFile(
         const healPage = await context.newPage();
         let healMcpClient: MCPBrowserClient | undefined;
         let healMcpExecutor: MCPExecutor | undefined;
+        let healCodeExecutor: CodeExecutor | undefined;
         if (config.automationMode === "mcp") {
           healMcpClient = await MCPBrowserClient.create(context);
           healMcpExecutor = new MCPExecutor(healPage, healMcpClient);
+        } else if (config.automationMode === "code") {
+          healCodeExecutor = new CodeExecutor(healPage);
         }
         try {
           const healer = new TestHealer(healPage, baseUrl, agenticProvider, {
             maxSteps: config.maxSteps,
             viewport: config.viewport,
             verbose: options.verbose,
-          }, healMcpExecutor);
+          }, healCodeExecutor || healMcpExecutor);
 
           const healResult = await healer.healSuite(testSuite, {
             savedSteps: canPartialReplay ? savedSteps : undefined,

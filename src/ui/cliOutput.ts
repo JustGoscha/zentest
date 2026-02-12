@@ -1,31 +1,18 @@
-const supportsColor = Boolean(process.stdout.isTTY) && process.env.NO_COLOR !== "1";
+import chalk from "chalk";
+import ora, { type Ora } from "ora";
 
-const ansi = {
-  reset: "\x1b[0m",
-  bold: "\x1b[1m",
-  dim: "\x1b[2m",
-  red: "\x1b[31m",
-  green: "\x1b[32m",
-  yellow: "\x1b[33m",
-  blue: "\x1b[34m",
-  magenta: "\x1b[35m",
-  cyan: "\x1b[36m",
-  gray: "\x1b[90m",
-};
-
-const applyColor = (text: string, c: string) =>
-  supportsColor ? `${c}${text}${ansi.reset}` : text;
+const SPINNER = { frames: ["◐", "◓", "◑", "◒"], interval: 120 };
 
 export const color = {
-  bold: (text: string) => applyColor(text, ansi.bold),
-  dim: (text: string) => applyColor(text, ansi.dim),
-  red: (text: string) => applyColor(text, ansi.red),
-  green: (text: string) => applyColor(text, ansi.green),
-  yellow: (text: string) => applyColor(text, ansi.yellow),
-  blue: (text: string) => applyColor(text, ansi.blue),
-  magenta: (text: string) => applyColor(text, ansi.magenta),
-  cyan: (text: string) => applyColor(text, ansi.cyan),
-  gray: (text: string) => applyColor(text, ansi.gray),
+  bold: (text: string) => chalk.bold(text),
+  dim: (text: string) => chalk.dim(text),
+  red: (text: string) => chalk.red(text),
+  green: (text: string) => chalk.green(text),
+  yellow: (text: string) => chalk.yellow(text),
+  blue: (text: string) => chalk.blue(text),
+  magenta: (text: string) => chalk.magenta(text),
+  cyan: (text: string) => chalk.cyan(text),
+  gray: (text: string) => chalk.gray(text),
 };
 
 export const sym = {
@@ -61,7 +48,7 @@ export const formatHeader = (
   browser: string
 ): string[] => {
   return [
-    color.bold("zentest v0.1.0"),
+    color.bold("zentest v0.2.0"),
     color.dim(`${url} · ${provider} · ${mode} · ${browser}`),
   ];
 };
@@ -199,35 +186,6 @@ export interface ProgressHandle {
 }
 
 export const startProgress = (maxSteps: number): ProgressHandle => {
-  const spinnerFrames = ["◐", "◓", "◑", "◒"];
-  let frameIdx = 0;
-  let timer: ReturnType<typeof setInterval> | undefined;
-  let lastLen = 0;
-  let currentText = "";
-  const prefix = indent(2);
-
-  const render = () => {
-    const frame = spinnerFrames[frameIdx++ % spinnerFrames.length];
-    const text = `${prefix}${color.dim(frame)} ${currentText}`;
-    const plainLen = stripAnsi(text).length;
-    const padded = text + " ".repeat(Math.max(0, lastLen - plainLen));
-    lastLen = Math.max(lastLen, plainLen);
-    process.stdout.write(`\r${padded}`);
-  };
-
-  const startTimer = () => {
-    if (!timer && process.stdout.isTTY) {
-      timer = setInterval(render, 120);
-    }
-  };
-
-  const stopTimer = () => {
-    if (timer) {
-      clearInterval(timer);
-      timer = undefined;
-    }
-  };
-
   if (!process.stdout.isTTY) {
     return {
       thinking(step) {
@@ -245,27 +203,30 @@ export const startProgress = (maxSteps: number): ProgressHandle => {
     };
   }
 
+  const spinner: Ora = ora({
+    spinner: SPINNER,
+    indent: 4,
+    stream: process.stdout,
+    color: "gray",
+  });
+
   return {
     thinking(step) {
-      currentText = color.dim(`Step ${step}/${maxSteps} · thinking...`);
-      startTimer();
-      render();
+      spinner.text = chalk.dim(`Step ${step}/${maxSteps} · thinking...`);
+      if (!spinner.isSpinning) spinner.start();
     },
     executing(step, action) {
-      currentText = color.dim(`Step ${step}/${maxSteps} · ${truncate(action, 40)}`);
-      render();
+      spinner.text = chalk.dim(`Step ${step}/${maxSteps} · ${truncate(action, 40)}`);
+      if (!spinner.isSpinning) spinner.start();
     },
     reasoning(text) {
       const short = text.replace(/\s+/g, " ").trim();
       const display = short.length > 80 ? short.slice(0, 79) + "…" : short;
-      currentText = color.dim(`💭 ${display}`);
-      startTimer();
-      render();
+      spinner.text = chalk.dim(`💭 ${display}`);
+      if (!spinner.isSpinning) spinner.start();
     },
     clear() {
-      stopTimer();
-      if (process.stdout.clearLine) process.stdout.clearLine(0);
-      if (process.stdout.cursorTo) process.stdout.cursorTo(0);
+      spinner.stop();
     },
   };
 };
@@ -286,32 +247,20 @@ export const startSpinner = (level: number, message: string): SpinnerHandle => {
     };
   }
 
-  const frames = ["◐", "◓", "◑", "◒"];
-  let index = 0;
-  let lastLength = 0;
-  let currentMessage = message;
-  const pfx = indent(level);
-
-  const render = () => {
-    const frame = frames[index++ % frames.length];
-    const text = `${pfx}${color.dim(frame)} ${currentMessage}`;
-    const plainLen = stripAnsi(text).length;
-    const padded = text + " ".repeat(Math.max(0, lastLength - plainLen));
-    lastLength = Math.max(lastLength, plainLen);
-    process.stdout.write(`\r${padded}`);
-  };
-
-  render();
-  const timer = setInterval(render, 120);
+  const spinner: Ora = ora({
+    text: message,
+    spinner: SPINNER,
+    indent: level * 2,
+    stream: process.stdout,
+    color: "gray",
+  }).start();
 
   return {
-    update: (msg: string) => { currentMessage = msg; render(); },
+    update: (msg: string) => { spinner.text = msg; },
     stop: (finalMessage?: string) => {
-      clearInterval(timer);
-      if (process.stdout.clearLine) process.stdout.clearLine(0);
-      if (process.stdout.cursorTo) process.stdout.cursorTo(0);
+      spinner.stop();
       if (finalMessage) {
-        process.stdout.write(`${pfx}${finalMessage}\n`);
+        logLine(level, finalMessage);
       }
     },
   };
@@ -346,5 +295,3 @@ const truncate = (str: string, max: number): string => {
   const clean = str.replace(/\s+/g, " ").trim();
   return clean.length > max ? clean.slice(0, max - 1) + "…" : clean;
 };
-
-const stripAnsi = (str: string): string => str.replace(/\x1b\[\d+m/g, "");

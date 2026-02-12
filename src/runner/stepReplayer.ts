@@ -1,5 +1,9 @@
 import { Page } from "playwright";
+import { expect } from "@playwright/test";
 import { RecordedStep } from "../types/actions.js";
+
+// AsyncFunction constructor for eval'ing code-mode steps
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 
 const POST_CLICK_WAIT_MS = 250;
 
@@ -22,6 +26,15 @@ export async function replaySteps(
 }
 
 async function replayStep(page: Page, step: RecordedStep): Promise<void> {
+  // Code mode: execute the generatedCode directly
+  if (step.mode === "code" && step.generatedCode) {
+    // Skip assertions during replay (fast-forwarding state)
+    if (/expect\s*\(/.test(step.generatedCode)) return;
+    const fn = new AsyncFunction("page", "expect", step.generatedCode);
+    await fn(page, expect);
+    return;
+  }
+
   const action = step.action;
 
   switch (action.type) {

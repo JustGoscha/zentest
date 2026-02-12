@@ -35,7 +35,8 @@ export class OpenAIProvider implements ComputerUseProvider {
       testDescription,
       actionHistory,
       viewport,
-      mode: "json",
+      mode: params.promptMode || "json",
+      codeHistory: params.codeHistory,
     });
 
     const response = await this.client.chat.completions.create({

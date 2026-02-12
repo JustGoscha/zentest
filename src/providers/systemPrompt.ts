@@ -1,12 +1,13 @@
-import { Action, ActionHistoryEntry } from "../types/actions.js";
+import { Action, ActionHistoryEntry, CodeHistoryEntry } from "../types/actions.js";
 
-type PromptMode = "json" | "claude";
+type PromptMode = "json" | "claude" | "code";
 
 interface BuildSystemPromptParams {
   testDescription: string;
   actionHistory: ActionHistoryEntry[];
   viewport: { width: number; height: number };
   mode: PromptMode;
+  codeHistory?: CodeHistoryEntry[];
 }
 
 const truncate = (value: string, max = 80) => {
@@ -74,12 +75,52 @@ const buildHistoryText = (actionHistory: ActionHistoryEntry[]): string =>
         .join("\n")}`
     : "";
 
+const buildCodeHistoryText = (codeHistory: CodeHistoryEntry[]): string =>
+  codeHistory.length > 0
+    ? `\n\nSteps taken so far:\n${codeHistory
+        .map(
+          (h, i) =>
+            `${i + 1}. \`${truncate(h.code, 120)}\` — ${truncate(h.reasoning, 100)}${h.error ? `\n   ERROR: ${truncate(h.error, 120)}` : ""}`
+        )
+        .join("\n")}`
+    : "";
+
 export const buildSystemPrompt = ({
   testDescription,
   actionHistory,
   viewport,
   mode,
+  codeHistory,
 }: BuildSystemPromptParams): string => {
+  if (mode === "code") {
+    const historyText = buildCodeHistoryText(codeHistory ?? []);
+
+    return `You are testing a web app. You see a screenshot and control the page via Playwright.
+
+Test: "${testDescription}"
+Viewport: ${viewport.width}x${viewport.height}
+${historyText}
+
+\`page\` and \`expect\` are in scope. Do not import anything.
+
+Respond with JSON:
+{ "code": ["await page.getByRole('button', { name: 'Submit' }).click()"], "reasoning": "what I see and why", "done": false }
+
+When ALL test requirements are verified:
+{ "code": ["await expect(page.getByText('Success')).toBeVisible()"], "reasoning": "...", "done": true, "success": true }
+
+Guidelines:
+- One \`await\` expression per code array element. No variables, no imports.
+- You can see the page. Use whatever locator works — semantic, CSS, or coordinates. Don't overthink it.
+- For icon-only buttons (hamburger menus, close buttons, etc.) with no visible text: use \`page.mouse.click(x, y)\` directly. NEVER use \`getByRole('button', { name: '' })\`.
+- If a locator fails or clicks the wrong element, switch to \`page.mouse.click(x, y)\`. Coordinates always work.
+- If a dialog/overlay is blocking, dismiss it first (Escape key or click outside), then try a DIFFERENT approach — don't repeat what opened it.
+- After navigation or form submit, add \`await page.waitForLoadState('networkidle')\`
+- Always use \`{ exact: true }\` with \`getByRole\` for buttons: \`getByRole('button', { name: 'Sign In', exact: true })\`
+- Verify ALL test requirements with \`expect()\` assertions before setting done: true.
+- If truly stuck after 3+ different approaches, set done: true, success: false.`;
+  }
+
   const historyText = buildHistoryText(actionHistory);
 
   if (mode === "claude") {

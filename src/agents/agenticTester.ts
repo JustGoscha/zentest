@@ -1,8 +1,9 @@
 import { Page } from "playwright";
 import { Test } from "../runner/testParser.js";
-import { Action, ActionHistoryEntry, RecordedStep, ElementInfo } from "../types/actions.js";
+import { Action, ActionHistoryEntry, CodeHistoryEntry, CodeModeResponse, RecordedStep, ElementInfo } from "../types/actions.js";
 import { BrowserExecutor } from "../browser/executor.js";
 import type { MCPExecutor } from "../mcp/mcpExecutor.js";
+import { CodeExecutor } from "../browser/codeExecutor.js";
 import {
   captureScreenshot,
   ensureViewport,
@@ -10,6 +11,7 @@ import {
 } from "../browser/screenshot.js";
 import { ComputerUseProvider } from "../providers/index.js";
 import type { TokenUsage } from "../providers/base.js";
+import { parseCodeResponse } from "../providers/actionParser.js";
 import { buildSystemPrompt } from "../providers/systemPrompt.js";
 import {
   color,
@@ -47,8 +49,9 @@ export class AgenticTester {
   private baseUrl: string;
   private provider: ComputerUseProvider;
   private executor: BrowserExecutor | MCPExecutor;
+  private codeExecutor?: CodeExecutor;
   private options: AgenticTesterOptions;
-  private lastFailure?: { error: string; screenshot?: Buffer; action?: Action };
+  private lastFailure?: { error: string; screenshot?: Buffer; action?: Action; code?: string };
   private aiStepCount = 0;
   private actionCount = 0;
   private usageTotals: Required<TokenUsage> = {
@@ -63,12 +66,17 @@ export class AgenticTester {
     baseUrl: string,
     provider: ComputerUseProvider,
     options: Partial<AgenticTesterOptions> = {},
-    mcpExecutor?: MCPExecutor
+    mcpOrCodeExecutor?: MCPExecutor | CodeExecutor
   ) {
     this.page = page;
     this.baseUrl = baseUrl;
     this.provider = provider;
-    this.executor = mcpExecutor || new BrowserExecutor(page);
+    if (mcpOrCodeExecutor instanceof CodeExecutor) {
+      this.codeExecutor = mcpOrCodeExecutor;
+      this.executor = new BrowserExecutor(page); // fallback, not used in code mode
+    } else {
+      this.executor = mcpOrCodeExecutor || new BrowserExecutor(page);
+    }
     this.options = {
       maxSteps: options.maxSteps || 50,
       viewport: options.viewport || { width: 1280, height: 720 },
@@ -79,6 +87,255 @@ export class AgenticTester {
   }
 
   async run(test: Test, runOptions?: { skipNavigation?: boolean }): Promise<AgenticTestResult> {
+    if (this.codeExecutor) {
+      return this.runCodeMode(test, runOptions);
+    }
+    return this.runActionMode(test, runOptions);
+  }
+
+  private async runCodeMode(test: Test, runOptions?: { skipNavigation?: boolean }): Promise<AgenticTestResult> {
+    const startTime = Date.now();
+    const steps: RecordedStep[] = [];
+    const codeHistory: CodeHistoryEntry[] = [];
+    let pendingCode: string[] = [];
+    let pendingReasoning = "";
+    let loopWarnings = 0;
+    const progress = startProgress(this.options.maxSteps);
+    const executor = this.codeExecutor!;
+
+    const makeResult = (
+      success: boolean,
+      message?: string,
+      error?: string
+    ): AgenticTestResult => ({
+      success,
+      steps,
+      message,
+      error,
+      durationMs: Date.now() - startTime,
+      tokenUsage: { ...this.usageTotals },
+    });
+
+    const truncCode = (code: string, max = 80) => {
+      const s = code.replace(/\s+/g, " ").trim();
+      return s.length > max ? s.slice(0, max - 1) + "…" : s;
+    };
+
+    try {
+      await ensureViewport(this.page, this.options.viewport);
+
+      if (!runOptions?.skipNavigation) {
+        await this.page.goto(this.baseUrl, { waitUntil: "networkidle" });
+      }
+
+      while (steps.length < this.options.maxSteps) {
+        const viewport = getViewportSize(this.page);
+        const stepNum = steps.length + 1;
+
+        if (pendingCode.length === 0) {
+          // Ask AI for next code
+          progress.thinking(stepNum);
+          const codeResponse = await this.getNextCodeWithRetry({
+            testDescription: test.description,
+            codeHistory,
+            viewport,
+          });
+          progress.clear();
+
+          this.aiStepCount += 1;
+
+          // Done signaling
+          if (codeResponse.done) {
+            // Execute any final code (e.g. assertions) before finishing
+            for (const code of codeResponse.code) {
+              const result = await executor.execute(code);
+              logLine(2, formatAction(this.actionCount + 1, truncCode(code)));
+              if (result.error) {
+                logLine(3, color.red(`${sym.fail} ${result.error}`));
+              }
+              steps.push({
+                action: { type: "done", success: false, reason: "code-mode" },
+                reasoning: codeResponse.reasoning,
+                generatedCode: code,
+                screenshot: result.screenshot,
+                error: result.error,
+                timestamp: result.timestamp,
+                mode: "code",
+              });
+              this.actionCount += 1;
+              codeHistory.push({ code, reasoning: codeResponse.reasoning, error: result.error });
+            }
+
+            const success = codeResponse.success ?? false;
+            const reason = codeResponse.reason || codeResponse.reasoning;
+            logBlank();
+            logLine(2, formatTestResult(success, reason, Date.now() - startTime, this.actionCount));
+            return makeResult(success, reason);
+          }
+
+          if (codeResponse.code.length === 0) {
+            logBlank();
+            logLine(2, formatTestResult(false, "No code from AI", Date.now() - startTime, this.actionCount));
+            return makeResult(false, "No code returned from AI");
+          }
+
+          pendingCode = [...codeResponse.code];
+          pendingReasoning = codeResponse.reasoning;
+        }
+
+        const code = pendingCode.shift()!;
+        const reasoning = pendingReasoning;
+
+        // Repeated code / loop detection
+        if (this.isRepeatedCode(codeHistory, code, 3)) {
+          loopWarnings += 1;
+          if (loopWarnings >= 2) {
+            progress.clear();
+            logBlank();
+            logLine(2, formatTestResult(false, "Stuck in loop", Date.now() - startTime, this.actionCount));
+            return makeResult(false, "Stuck in a loop without progress");
+          }
+          // First warning: skip this code, tell AI to try coordinates
+          logLine(3, color.yellow(`${sym.warn} Loop detected — forcing new approach`));
+          pendingCode = [];
+          this.lastFailure = {
+            error: "You are repeating the same actions in a loop. STOP using the same locators. Look at the screenshot and use page.mouse.click(x, y) with exact coordinates of the element you need to click.",
+            screenshot: await captureScreenshot(this.page),
+          };
+          continue;
+        }
+
+        // Execute code
+        progress.executing(stepNum, truncCode(code));
+        const result = await executor.execute(code);
+        progress.clear();
+
+        logLine(2, formatAction(this.actionCount + 1, truncCode(code)));
+
+        if (result.error) {
+          logLine(3, color.red(`${sym.fail} ${result.error}`));
+        }
+
+        if (reasoning) {
+          progress.reasoning(reasoning);
+        }
+
+        // Record step
+        steps.push({
+          action: { type: "done", success: false, reason: "code-mode" },
+          reasoning,
+          generatedCode: code,
+          screenshot: result.screenshot,
+          error: result.error,
+          timestamp: result.timestamp,
+          mode: "code",
+        });
+        this.actionCount += 1;
+        codeHistory.push({ code, reasoning, error: result.error });
+
+        if (result.error) {
+          this.lastFailure = {
+            error: result.error,
+            screenshot: result.screenshot,
+            code,
+          };
+          pendingCode = []; // Ask AI again with error context
+        }
+
+        await executor.waitForStable();
+      }
+
+      progress.clear();
+      logBlank();
+      logLine(2, formatTestResult(false, "Max steps reached", Date.now() - startTime, this.actionCount));
+      return makeResult(false, undefined, `Max steps (${this.options.maxSteps}) reached without completing test`);
+    } catch (error) {
+      progress.clear();
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logBlank();
+      logLine(2, formatTestResult(false, errorMessage, Date.now() - startTime, this.actionCount));
+      return makeResult(false, undefined, errorMessage);
+    }
+  }
+
+  private async getNextCodeWithRetry(params: {
+    testDescription: string;
+    codeHistory: CodeHistoryEntry[];
+    viewport: { width: number; height: number };
+  }): Promise<CodeModeResponse> {
+    const maxRetries = this.options.retryNoResponse ?? 0;
+    let attempt = 0;
+    let retryFeedback: string | undefined;
+
+    while (true) {
+      const screenshot =
+        this.lastFailure?.screenshot || (await captureScreenshot(this.page));
+      const failureText = this.lastFailure
+        ? `Code \`${this.lastFailure.code || ""}\` failed: ${this.lastFailure.error}`
+        : retryFeedback;
+
+      const result = await this.provider.getNextAction({
+        screenshot,
+        testDescription: params.testDescription,
+        actionHistory: [],
+        viewport: params.viewport,
+        lastFailureText: failureText,
+        promptMode: "code",
+        codeHistory: params.codeHistory,
+      });
+      this.recordUsage(result.usage);
+
+      if (this.lastFailure?.screenshot) {
+        this.lastFailure = undefined;
+      }
+
+      // Re-parse the raw response as code mode
+      const parsed = parseCodeResponse(result.rawResponse);
+
+      if (this.options.verbose) {
+        logBlank();
+        logLine(3, color.dim("── AI Response (code mode) ──"));
+        if (result.rawResponse) {
+          for (const line of result.rawResponse.split("\n")) logLine(4, color.dim(line));
+        }
+        logLine(3, color.dim(`Reasoning: ${parsed.reasoning}`));
+        logLine(3, color.dim(`Code: ${parsed.code.length} statements, done: ${parsed.done}`));
+        logLine(3, color.dim("────────────────────────────"));
+        logBlank();
+      }
+
+      // Check if response needs retry (parse failure)
+      const isParseFailure = parsed.done && parsed.code.length === 0 &&
+        (parsed.reasoning.includes("Failed to parse") || parsed.reasoning.includes("No response"));
+      if (!isParseFailure || attempt >= maxRetries) {
+        return parsed;
+      }
+
+      retryFeedback = `Your previous response could not be parsed. Return valid JSON with: { "code": ["await ..."], "reasoning": "...", "done": false }`;
+      attempt++;
+      logLine(3, color.yellow(`${sym.warn} Invalid AI response, retrying (${attempt}/${maxRetries})...`));
+    }
+  }
+
+  private isRepeatedCode(codeHistory: CodeHistoryEntry[], code: string, repeatCount: number): boolean {
+    if (codeHistory.length < repeatCount) return false;
+    const sig = code.trim();
+    // Exact same code N times in a row
+    if (codeHistory.slice(-repeatCount).every((h) => h.code.trim() === sig)) return true;
+    // Oscillating pattern: detect cycles in last 2*repeatCount steps
+    // e.g. click → escape → click → escape → click → escape
+    const windowSize = repeatCount * 2;
+    if (codeHistory.length >= windowSize) {
+      const recent = [...codeHistory.slice(-windowSize), { code, reasoning: "", error: undefined }];
+      const codes = recent.map((h) => h.code.trim());
+      const unique = new Set(codes);
+      // If only 2-3 unique codes in 6+ steps, we're looping
+      if (unique.size <= 2 && codes.length >= windowSize) return true;
+    }
+    return false;
+  }
+
+  private async runActionMode(test: Test, runOptions?: { skipNavigation?: boolean }): Promise<AgenticTestResult> {
     const startTime = Date.now();
     const steps: RecordedStep[] = [];
     const actionHistory: ActionHistoryEntry[] = [];

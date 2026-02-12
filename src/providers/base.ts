@@ -1,4 +1,4 @@
-import { Action, ActionHistoryEntry } from "../types/actions.js";
+import { Action, ActionHistoryEntry, CodeHistoryEntry } from "../types/actions.js";
 
 /**
  * Parameters for getting the next action from AI
@@ -14,6 +14,10 @@ export interface GetNextActionParams {
   viewport: { width: number; height: number };
   /** Optional context for last failed instruction */
   lastFailureText?: string;
+  /** Prompt mode override: "json" (default), "claude", or "code" */
+  promptMode?: "json" | "claude" | "code";
+  /** Code history for code mode (used instead of actionHistory when promptMode is "code") */
+  codeHistory?: CodeHistoryEntry[];
 }
 
 /**

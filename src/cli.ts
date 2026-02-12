@@ -19,7 +19,7 @@ const program = new Command();
 program
   .name("zentest")
   .description("Agentic QA testing framework - write tests in plain English")
-  .version("0.1.0");
+  .version("0.2.0");
 
 program
   .command("init")

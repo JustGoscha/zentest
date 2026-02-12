@@ -42,7 +42,8 @@ export class OpenRouterProvider implements ComputerUseProvider {
       testDescription,
       actionHistory,
       viewport,
-      mode: "json",
+      mode: params.promptMode || "json",
+      codeHistory: params.codeHistory,
     });
 
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [

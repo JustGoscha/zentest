@@ -76,7 +76,7 @@ export class MCPBrowserClient {
     const backend = new BrowserServerBackend(config, factory);
     const client = await wrapInClient(backend, {
       name: "zentest",
-      version: "0.1.0",
+      version: "0.2.0",
     });
 
     return new MCPBrowserClient(client, backend);

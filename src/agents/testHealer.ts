@@ -5,6 +5,7 @@ import { RecordedStep } from "../types/actions.js";
 import { Page } from "playwright";
 import { ComputerUseProvider } from "../providers/index.js";
 import type { MCPExecutor } from "../mcp/mcpExecutor.js";
+import { CodeExecutor } from "../browser/codeExecutor.js";
 import type { AutomationMode } from "../config/loader.js";
 import { replaySteps } from "../runner/stepReplayer.js";
 import {
@@ -39,20 +40,20 @@ export class TestHealer {
   private baseUrl: string;
   private provider: ComputerUseProvider;
   private options: TestHealerOptions;
-  private mcpExecutor?: MCPExecutor;
+  private mcpOrCodeExecutor?: MCPExecutor | CodeExecutor;
 
   constructor(
     page: Page,
     baseUrl: string,
     provider: ComputerUseProvider,
     options: TestHealerOptions = {},
-    mcpExecutor?: MCPExecutor
+    mcpOrCodeExecutor?: MCPExecutor | CodeExecutor
   ) {
     this.page = page;
     this.baseUrl = baseUrl;
     this.provider = provider;
     this.options = options;
-    this.mcpExecutor = mcpExecutor;
+    this.mcpOrCodeExecutor = mcpOrCodeExecutor;
   }
 
   /**
@@ -76,7 +77,7 @@ export class TestHealer {
         maxSteps: this.options.maxSteps,
         viewport: this.options.viewport,
       },
-      this.mcpExecutor
+      this.mcpOrCodeExecutor
     );
     const result = await agenticTester.run(test);
 
@@ -88,7 +89,9 @@ export class TestHealer {
     }
 
     // Generate new static test
-    const automationMode: AutomationMode = this.mcpExecutor ? "mcp" : "vision";
+    const automationMode: AutomationMode = this.mcpOrCodeExecutor instanceof CodeExecutor
+      ? "code"
+      : this.mcpOrCodeExecutor ? "mcp" : "vision";
     const builder = new TestBuilder(suiteName, test.name, automationMode);
     const newTestCode = builder.generate(result.steps, test);
 
@@ -170,7 +173,7 @@ export class TestHealer {
           viewport: this.options.viewport,
           verbose: this.options.verbose,
         },
-        this.mcpExecutor
+        this.mcpOrCodeExecutor
       );
 
       // Skip navigation — we already navigated (and possibly replayed) above
@@ -224,7 +227,7 @@ export class TestHealer {
           viewport: this.options.viewport,
           verbose: this.options.verbose,
         },
-        this.mcpExecutor
+        this.mcpOrCodeExecutor
       );
 
       // Skip navigation — we already navigated above

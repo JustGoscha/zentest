@@ -15,7 +15,7 @@ export interface ModelConfig {
   healerModel: string;
 }
 
-export type AutomationMode = "vision" | "mcp";
+export type AutomationMode = "vision" | "mcp" | "code";
 
 export interface ZentestConfig {
   baseUrl: string;
@@ -38,6 +38,7 @@ export interface ZentestConfig {
    * Automation mode for action execution:
    * - "vision": Original mode — BrowserExecutor with custom code generation
    * - "mcp": Uses Playwright MCP tools for execution + auto-generated Playwright code
+   * - "code": AI returns Playwright code directly — eval'd for execution, used as-is in static tests
    */
   automationMode: AutomationMode;
 }
@@ -56,7 +57,7 @@ const DEFAULT_CONFIG: ZentestConfig = {
   maxSteps: 50,
   viewport: { width: 1280, height: 720 },
   headless: "auto",
-  automationMode: "vision",
+  automationMode: "code",
 };
 
 /**

@@ -1,4 +1,4 @@
-import { Action } from "../types/actions.js";
+import { Action, CodeModeResponse } from "../types/actions.js";
 import { GetNextActionResult } from "./base.js";
 
 /**
@@ -174,8 +174,9 @@ export function parseJsonResponse(content: string | null | undefined): GetNextAc
 
 /**
  * Extract the best JSON object from a string that may contain surrounding text.
+ * @param preferKey - prefer objects containing this key (e.g. "actions" or "code")
  */
-function extractBestJsonObject(input: string): string | null {
+function extractBestJsonObject(input: string, preferKey = "actions"): string | null {
   const fenced = input.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fenced && fenced[1]) {
     const candidate = fenced[1].trim();
@@ -205,11 +206,59 @@ function extractBestJsonObject(input: string): string | null {
   }
 
   if (candidates.length === 0) return null;
-  const withActions = candidates.filter((item) => {
-    const parsed = item.parsed as { actions?: unknown };
-    return Array.isArray(parsed.actions);
+  const withPreferred = candidates.filter((item) => {
+    const parsed = item.parsed as Record<string, unknown>;
+    return preferKey in parsed;
   });
-  const pool = withActions.length > 0 ? withActions : candidates;
+  const pool = withPreferred.length > 0 ? withPreferred : candidates;
   pool.sort((a, b) => b.text.length - a.text.length);
   return pool[0].text;
+}
+
+/**
+ * Parse a code-mode response from the AI.
+ * Expects JSON with { code: string[], reasoning: string, done: boolean, success?: boolean }
+ */
+export function parseCodeResponse(content: string | null | undefined): CodeModeResponse & { rawResponse?: string } {
+  const fail = (reason: string): CodeModeResponse & { rawResponse?: string } => ({
+    code: [],
+    reasoning: reason,
+    done: true,
+    success: false,
+    reason,
+    rawResponse: content ?? undefined,
+  });
+
+  if (!content) return fail("No response from AI");
+
+  const tryParse = (input: string): CodeModeResponse & { rawResponse?: string } => {
+    const parsed = JSON.parse(input) as Record<string, unknown>;
+    const reasoning = String(parsed.reasoning || "No reasoning provided");
+
+    // Validate code array
+    let code: string[] = [];
+    if (Array.isArray(parsed.code)) {
+      code = parsed.code.filter((c): c is string => typeof c === "string" && c.trim().length > 0);
+    }
+
+    const done = Boolean(parsed.done);
+    const success = done ? Boolean(parsed.success) : undefined;
+    const reason = parsed.reason ? String(parsed.reason) : undefined;
+
+    return { code, reasoning, done, success, reason, rawResponse: content };
+  };
+
+  try {
+    return tryParse(content);
+  } catch {
+    const extracted = extractBestJsonObject(content, "code");
+    if (extracted) {
+      try {
+        return tryParse(extracted);
+      } catch {
+        // fall through
+      }
+    }
+    return fail(`Failed to parse response: ${content.slice(0, 200)}`);
+  }
 }

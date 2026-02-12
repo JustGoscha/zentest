@@ -137,7 +137,9 @@ export class TestBuilder {
    * Uses test.describe.serial() so tests run in order and share browser state
    */
   generateSuite(testResults: TestResult[], suite: TestSuite): string {
-    const modeLabel = this.automationMode === "mcp"
+    const modeLabel = this.automationMode === "code"
+      ? "code (AI-generated Playwright code)"
+      : this.automationMode === "mcp"
       ? "mcp (Playwright MCP tools — auto-generated locators)"
       : "vision (screenshot-based code generation)";
     const lines: string[] = [
@@ -253,7 +255,17 @@ export class TestBuilder {
     }
 
     const seenAssertions = new Set<string>();
-    const hasTextAssertion = steps.some((s) => s.action.type === "assert_text" || s.action.type === "assert_not_text");
+    const isAssertionStep = (s: RecordedStep): boolean => {
+      if (s.mode === "code") {
+        return !!s.generatedCode && /expect\s*\(/.test(s.generatedCode);
+      }
+      return s.action.type === "assert_visible" || s.action.type === "assert_text" || s.action.type === "assert_not_text";
+    };
+    const hasTextAssertion = steps.some((s) =>
+      s.mode === "code"
+        ? isAssertionStep(s)
+        : s.action.type === "assert_text" || s.action.type === "assert_not_text"
+    );
 
     for (const step of steps) {
       // Skip steps that errored during the agentic run - they would fail in static replay too
@@ -264,7 +276,7 @@ export class TestBuilder {
       const code = this.stepToCode(step);
       if (code) {
         // Deduplicate identical assertions
-        const isAssertion = step.action.type === "assert_visible" || step.action.type === "assert_text" || step.action.type === "assert_not_text";
+        const isAssertion = isAssertionStep(step);
         if (hasTextAssertion && step.action.type === "assert_visible") {
           continue; // Prefer text assertions over visibility-only checks
         }
@@ -277,7 +289,7 @@ export class TestBuilder {
         }
 
         // Add reasoning as comment, tagged with code origin
-        const origin = step.generatedCode ? "[mcp]" : "[vision]";
+        const origin = step.mode === "code" ? "[code]" : step.generatedCode ? "[mcp]" : "[vision]";
         if (step.reasoning) {
           lines.push(`    // ${origin} ${step.reasoning.slice(0, 74)}`);
         }
@@ -317,8 +329,12 @@ export class TestBuilder {
   }
 
   private stepToCode(step: RecordedStep): string | null {
-    // If MCP provided code, use it directly (proper locators like getByRole/getByText)
-    // but append waits based on the action type to keep generated tests stable.
+    // Code mode: AI-generated Playwright code, use as-is (AI manages its own waits)
+    if (step.mode === "code" && step.generatedCode) {
+      return step.generatedCode;
+    }
+
+    // MCP mode: use generated code but append waits for stable static replay
     if (step.generatedCode) {
       return step.generatedCode + this.waitForAction(step.action);
     }
