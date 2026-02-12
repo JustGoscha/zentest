@@ -132,6 +132,7 @@ export class AgenticTester {
         }
 
         const reasoning = pendingReasoning;
+        pendingReasoning = ""; // Only show reasoning on the first action of a batch
 
         if (action.type !== "done" && this.isRepeatedAction(actionHistory, action, 3)) {
           progress.clear();

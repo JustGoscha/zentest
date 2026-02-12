@@ -13,9 +13,11 @@ import {
 } from "../config/loader.js";
 import { createProvider, ComputerUseProvider } from "../providers/index.js";
 import { AgenticTester } from "../agents/agenticTester.js";
-import { TestBuilder, TestResult } from "../agents/testBuilder.js";
+import { TestBuilder, TestResult, SerializedSuiteSteps } from "../agents/testBuilder.js";
 import { TestHealer } from "../agents/testHealer.js";
 import { TestRewriter } from "../agents/testRewriter.js";
+import { replaySteps } from "../runner/stepReplayer.js";
+import { RecordedStep } from "../types/actions.js";
 import { MCPBrowserClient } from "../mcp/mcpClient.js";
 import { MCPExecutor } from "../mcp/mcpExecutor.js";
 import {
@@ -222,6 +224,8 @@ async function runTestFile(
 
   // Check if the static test covers all tests in the .md
   let staticTestsOutdated = false;
+  let savedStepsData: SerializedSuiteSteps | undefined;
+  let firstMissingTestIndex = 0;
   if (hasStaticTest) {
     const savedSteps = TestBuilder.loadSuiteSteps(stepsPath);
     if (savedSteps) {
@@ -229,8 +233,14 @@ async function runTestFile(
       const missingTests = testSuite.tests.filter((t) => !savedNames.has(t.name));
       if (missingTests.length > 0) {
         staticTestsOutdated = true;
+        savedStepsData = savedSteps;
+        firstMissingTestIndex = testSuite.tests.findIndex((t) => !savedNames.has(t.name));
         logLine(1, color.yellow(`${sym.warn} Static tests cover ${savedNames.size}/${testSuite.tests.length} tests — missing: ${missingTests.map((t) => t.name).join(", ")}`));
-        logLine(1, color.dim(`${sym.info} Re-running full suite agentically...`));
+        if (firstMissingTestIndex > 0) {
+          logLine(1, color.dim(`${sym.info} Replaying ${firstMissingTestIndex} saved test(s), then running agentically from '${testSuite.tests[firstMissingTestIndex].name}'...`));
+        } else {
+          logLine(1, color.dim(`${sym.info} Running suite agentically...`));
+        }
       }
     } else if (!fs.existsSync(stepsPath)) {
       // No steps.json at all — can't verify coverage, force agentic
@@ -256,7 +266,51 @@ async function runTestFile(
     }
 
     try {
-      for (const test of testSuite.tests) {
+      // Phase 1: Replay saved steps for tests we already have coverage for
+      const canPartialReplay = savedStepsData && firstMissingTestIndex > 0;
+      let agenticStartIndex = 0;
+
+      if (canPartialReplay) {
+        await page.goto(baseUrl, { waitUntil: "networkidle" });
+        isFirstTest = false;
+
+        for (let i = 0; i < firstMissingTestIndex; i++) {
+          const test = testSuite.tests[i];
+          const saved = savedStepsData!.tests.find((t) => t.name === test.name);
+
+          if (!saved) {
+            logLine(2, `${color.yellow(sym.warn)} No saved steps for '${test.name}', falling back to full agentic`);
+            // Reset — run everything agentically from scratch
+            await page.goto(baseUrl, { waitUntil: "networkidle" });
+            testResults.length = 0;
+            agenticStartIndex = 0;
+            break;
+          }
+
+          logBlank();
+          logLine(1, formatTestName(test.name));
+          logLine(2, `${color.cyan(sym.info)} Replaying saved steps...`);
+
+          try {
+            await replaySteps(page, saved.steps as RecordedStep[]);
+            testResults.push({ test, steps: saved.steps as RecordedStep[] });
+            summaryRows.push({ name: test.name, passed: true, durationMs: 0, actionCount: 0 });
+            logLine(2, `${color.green(sym.pass)} Replay complete`);
+            agenticStartIndex = i + 1;
+          } catch (error) {
+            logLine(2, `${color.yellow(sym.warn)} Replay failed: ${error instanceof Error ? error.message : error}`);
+            logLine(2, `${color.cyan(sym.info)} Falling back to full agentic run...`);
+            await page.goto(baseUrl, { waitUntil: "networkidle" });
+            testResults.length = 0;
+            agenticStartIndex = 0;
+            break;
+          }
+        }
+      }
+
+      // Phase 2: Run remaining tests agentically
+      for (let i = agenticStartIndex; i < testSuite.tests.length; i++) {
+        const test = testSuite.tests[i];
         logBlank();
         logLine(1, formatTestName(test.name));
         logLine(2, color.dim(`"${test.description}"`));
@@ -268,7 +322,8 @@ async function runTestFile(
           verbose: options.verbose,
         }, mcpExecutor);
 
-        const result = await tester.run(test, { skipNavigation: !isFirstTest });
+        const skipNav = canPartialReplay ? true : (i > 0 || !isFirstTest);
+        const result = await tester.run(test, { skipNavigation: skipNav });
         isFirstTest = false;
 
         // Collect stats

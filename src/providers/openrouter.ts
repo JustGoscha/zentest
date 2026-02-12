@@ -62,7 +62,7 @@ export class OpenRouterProvider implements ComputerUseProvider {
               lastFailureText
                 ? `Last instruction failed: ${lastFailureText}. Try a different action.\n\n`
                 : ""
-            }Did we complete the test? If not, what action should I take next to complete the test? Respond with JSON.`,
+            }Did we complete the test? If not, what actions should I take next? Batch multiple actions when possible. Respond with JSON.`,
           },
         ],
       },

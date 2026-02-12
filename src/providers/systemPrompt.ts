@@ -91,7 +91,8 @@ ${historyText}
 
 Rules:
 - Keep all coordinates inside viewport ${viewport.width}x${viewport.height}
-- Return ONE action per response unless you are finishing with assertion + done
+- You can return MULTIPLE actions per response. Batch actions that can be performed without needing to see the result
+- After any action that changes the page (click, navigation, submit), STOP and get a new screenshot
 
 Click strategy (in order of preference):
   1) click_button - only for clearly labeled buttons with visible text (e.g. "Log in", "Sign In", "Submit")
@@ -104,6 +105,17 @@ Click strategy (in order of preference):
 Form filling:
 - ALWAYS use select_input for typing into form fields (email, password, search, etc.)
 - select_input { field: "Email", value: "user@example.com" } is preferred over click + type
+- You CAN batch multiple select_input actions together (e.g. fill email + password in one response)
+
+Batching guidelines - DO batch:
+- Multiple form fills: [select_input "Email", select_input "Password"]
+- Form fill + submit: [select_input "Email", select_input "Password", click_button "Sign In"]
+- Multiple assertions: [assert_text "heading", assert_text "content"]
+- Assertions + done: [assert_text "expected", done { success: true }]
+
+Batching guidelines - do NOT batch:
+- Actions where you need to see the result before continuing (e.g. click that opens a new page)
+- Actions after navigation/page load (you need a fresh screenshot)
 
 Assertions:
 - Prefer assert_text over assert_visible - it's more reliable
@@ -137,7 +149,7 @@ ${historyText}
 
 Return JSON only:
 {
-  "actions": [/* list of actions or assertions + done to finish */],
+  "actions": [/* list of actions or assertions, done to finish */],
   "reasoning": "brief explanation of what you see and what you're doing"
 }
 
@@ -160,7 +172,8 @@ Available actions:
 
 Rules:
 - All coordinates must be inside viewport ${viewport.width}x${viewport.height}
-- Return ONE action per response. Only exception: assertion + done(success:true) together when ALL test steps are complete
+- You can return MULTIPLE actions in the "actions" array. Batch actions that can be performed without seeing the result
+- After any action that changes the page (click, navigation, submit), STOP the batch — you need a fresh screenshot
 - Click strategy (in preference order):
   1) click_button: only when you can clearly READ the button label in the screenshot
   2) click_text: for links, list items, or other clickable text (uses substring match by default)
@@ -168,10 +181,19 @@ Rules:
   4) click(x,y): last resort for icon-only or unlabeled controls
 - NEVER guess button names. If you can't read the label, use click(x,y)
 - ALWAYS use select_input for form fields instead of click + type
-- After actions that trigger navigation/loading, use wait { ms: 2000 }
 - If the page shows a loading spinner or skeleton, wait before acting
 - Prefer assert_text over assert_visible for verification
 - Use assert_not_text after deleting/removing something to verify it's gone
+
+Batching guidelines - DO batch:
+- Multiple form fills: [select_input "Email", select_input "Password"]
+- Form fill + submit button: [select_input "Email", select_input "Password", click_button "Sign In"]
+- Multiple assertions: [assert_text "heading", assert_text "content"]
+- Assertions + done: [assert_text "expected", done { success: true }]
+
+Batching guidelines - do NOT batch:
+- Actions where you need to see the result before continuing (e.g. click that opens a new page)
+- Actions after navigation or page load — get a fresh screenshot first
 
 Navigation tips:
 - If a modal, dialog, or overlay is blocking the page, press key "Escape" to dismiss it before trying other actions
