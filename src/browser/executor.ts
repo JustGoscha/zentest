@@ -249,6 +249,18 @@ export class BrowserExecutor {
         return { action, screenshot, elementInfo, timestamp };
       }
 
+      case "assert_not_text": {
+        const locator = this.page.getByText(action.text, { exact: false });
+        const count = await locator.count();
+
+        if (count > 0) {
+          throw new Error(`Text "${action.text}" was found on the page but should not exist`);
+        }
+
+        const screenshot = await captureScreenshot(this.page);
+        return { action, screenshot, timestamp };
+      }
+
         case "screenshot":
           // Just return the screenshot
           break;

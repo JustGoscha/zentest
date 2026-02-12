@@ -230,6 +230,18 @@ export class MCPExecutor {
         return this.processResult(result);
       }
 
+      case "assert_not_text": {
+        // No MCP tool for negative assertion — use Playwright directly
+        const locator = this.page.getByText(action.text, { exact: false });
+        const count = await locator.count();
+        if (count > 0) {
+          throw new Error(`Text "${action.text}" was found on the page but should not exist`);
+        }
+        return {
+          generatedCode: `await expect(page.getByText('${action.text.replace(/'/g, "\\'")}')).not.toBeVisible();`,
+        };
+      }
+
       case "assert_visible": {
         // MCP verify needs role+name, but we only have coordinates.
         // Fall back to direct Playwright

@@ -8,11 +8,11 @@ import type { MCPExecutor } from "../mcp/mcpExecutor.js";
 import type { AutomationMode } from "../config/loader.js";
 import { replaySteps } from "../runner/stepReplayer.js";
 import {
-  INDENT_LEVELS,
   color,
-  formatTestHeader,
+  sym,
+  formatTestName,
   logLine,
-  statusLabel,
+  logBlank,
 } from "../ui/cliOutput.js";
 
 export interface TestHealerOptions {
@@ -63,8 +63,9 @@ export class TestHealer {
     test: Test,
     failureReason: string
   ): Promise<{ success: boolean; newTestCode?: string; error?: string }> {
-    console.log(`  Healing test: ${test.name}`);
-    console.log(`     Failure: ${failureReason}`);
+    logBlank();
+    logLine(1, formatTestName(test.name));
+    logLine(2, color.dim(`Failure: ${failureReason}`));
 
     // Run agentic tester to figure out the new flow
     const agenticTester = new AgenticTester(
@@ -130,39 +131,24 @@ export class TestHealer {
 
         if (!saved) {
           // No saved steps for this test — fall back to full agentic
-          logLine(
-            INDENT_LEVELS.step,
-            `${statusLabel("warn")} No saved steps for '${test.name}', falling back to agentic`
-          );
+          logLine(2, `${color.yellow(sym.warn)} No saved steps for '${test.name}', falling back to agentic`);
           return this.healSuiteAgentic(suite);
         }
 
-        console.log("");
-        logLine(INDENT_LEVELS.test, formatTestHeader(test.name));
-        logLine(
-          INDENT_LEVELS.step,
-          `${statusLabel("info")} Replaying saved steps...`
-        );
+        logBlank();
+        logLine(1, formatTestName(test.name));
+        logLine(2, `${color.cyan(sym.info)} Replaying saved steps...`);
 
         try {
           await replaySteps(this.page, saved.steps as RecordedStep[]);
           passed++;
           testResults.push({ test, steps: saved.steps as RecordedStep[] });
-          logLine(
-            INDENT_LEVELS.step,
-            `${statusLabel("check")} Replay complete`
-          );
+          logLine(2, `${color.green(sym.pass)} Replay complete`);
         } catch (error) {
           // Replay failed — the passing tests no longer work either.
           // Fall back to full agentic from scratch.
-          logLine(
-            INDENT_LEVELS.step,
-            `${statusLabel("warn")} Replay failed: ${error instanceof Error ? error.message : error}`
-          );
-          logLine(
-            INDENT_LEVELS.step,
-            `${statusLabel("info")} Falling back to full agentic healing...`
-          );
+          logLine(2, `${color.yellow(sym.warn)} Replay failed: ${error instanceof Error ? error.message : error}`);
+          logLine(2, `${color.cyan(sym.info)} Falling back to full agentic healing...`);
           return this.healSuiteAgentic(suite);
         }
       }
@@ -171,9 +157,9 @@ export class TestHealer {
     // Phase 2: Run remaining tests agentically
     for (let i = canReplay ? failedTestIndex : 0; i < suite.tests.length; i++) {
       const test = suite.tests[i];
-      console.log("");
-      logLine(INDENT_LEVELS.test, formatTestHeader(test.name));
-      logLine(INDENT_LEVELS.step, color.dim(`"${test.description}"`));
+      logBlank();
+      logLine(1, formatTestName(test.name));
+      logLine(2, color.dim(`"${test.description}"`));
 
       const tester = new AgenticTester(
         this.page,
@@ -195,10 +181,7 @@ export class TestHealer {
         testResults.push({ test, steps: result.steps });
       } else {
         failed++;
-        logLine(
-          INDENT_LEVELS.step,
-          `${statusLabel("warn")} Stopping suite heal - subsequent tests depend on previous state`
-        );
+        logLine(2, `${color.yellow(sym.warn)} Stopping suite heal — subsequent tests depend on previous state`);
         break;
       }
     }
@@ -228,9 +211,9 @@ export class TestHealer {
     await this.page.goto(this.baseUrl, { waitUntil: "networkidle" });
 
     for (const test of suite.tests) {
-      console.log("");
-      logLine(INDENT_LEVELS.test, formatTestHeader(test.name));
-      logLine(INDENT_LEVELS.step, color.dim(`"${test.description}"`));
+      logBlank();
+      logLine(1, formatTestName(test.name));
+      logLine(2, color.dim(`"${test.description}"`));
 
       const tester = new AgenticTester(
         this.page,
@@ -252,10 +235,7 @@ export class TestHealer {
         testResults.push({ test, steps: result.steps });
       } else {
         failed++;
-        logLine(
-          INDENT_LEVELS.step,
-          `${statusLabel("warn")} Stopping suite heal - subsequent tests depend on previous state`
-        );
+        logLine(2, `${color.yellow(sym.warn)} Stopping suite heal — subsequent tests depend on previous state`);
         break;
       }
     }

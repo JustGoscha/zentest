@@ -91,6 +91,7 @@ async function replayStep(page: Page, step: RecordedStep): Promise<void> {
     // Skip assertions during replay — we're just fast-forwarding state
     case "assert_visible":
     case "assert_text":
+    case "assert_not_text":
     case "done":
     case "mouse_move":
     case "mouse_down":

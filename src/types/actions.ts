@@ -69,7 +69,8 @@ export type ControlAction =
 // Assertion actions
 export type AssertAction =
   | { type: "assert_visible"; x: number; y: number }
-  | { type: "assert_text"; text: string };
+  | { type: "assert_text"; text: string }
+  | { type: "assert_not_text"; text: string };
 
 // Union of all action types
 export type Action =

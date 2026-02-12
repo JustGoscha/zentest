@@ -15,9 +15,10 @@ export function validateAction(action: unknown): Action {
   switch (type) {
     case "click":
     case "double_click":
+    case "hover":
     case "mouse_move":
       return {
-        type: type as "click" | "double_click" | "mouse_move",
+        type: (type === "hover" ? "mouse_move" : type) as "click" | "double_click" | "mouse_move",
         x: Number(a.x) || 0,
         y: Number(a.y) || 0,
         ...(type === "click" && a.button
@@ -93,6 +94,12 @@ export function validateAction(action: unknown): Action {
     case "assert_text":
       return {
         type: "assert_text",
+        text: String(a.text || ""),
+      };
+
+    case "assert_not_text":
+      return {
+        type: "assert_not_text",
         text: String(a.text || ""),
       };
 

@@ -53,6 +53,8 @@ const formatActionSummary = (action: Action): string => {
       return `assert_visible (${action.x}, ${action.y})`;
     case "assert_text":
       return `assert_text "${truncate(action.text ?? "", 50)}"`;
+    case "assert_not_text":
+      return `assert_not_text "${truncate(action.text ?? "", 50)}"`;
     case "screenshot":
       return "screenshot";
     case "done":
@@ -111,12 +113,16 @@ Waiting and timing:
 Assertions:
 - Prefer assert_text over assert_visible - it's more reliable
 - assert_text checks if text exists anywhere on the page. Use it to verify content loaded
+- assert_not_text checks that text does NOT exist on the page. Use it after deleting/removing something
 - When the test asks to "verify" something, use assert_text with the expected text
+- When verifying something was deleted/removed, use assert_not_text
 
 Navigation tips:
 - If a modal, dialog, or overlay is blocking the page, press key "Escape" to dismiss it before trying other actions
 - If you can't find an element, try scrolling to reveal it
 - For icon-only buttons without text labels, use click(x,y) on the icon's coordinates
+- Use hover(x,y) to reveal hidden elements (e.g. delete buttons, tooltips, menus that appear on hover)
+- Use drag(startX, startY, endX, endY) to move elements, reorder items, or interact with sliders
 
 Completion:
 - ONLY use done when ALL steps in the test description are completed
@@ -150,9 +156,12 @@ Available actions:
 - double_click { type: "double_click", x: 640, y: 360 }
 - type { type: "type", text: "hello" }
 - key { type: "key", key: "Enter" }
+- hover { type: "hover", x: 640, y: 360 }
+- drag { type: "drag", startX: 100, startY: 200, endX: 300, endY: 400 }
 - scroll { type: "scroll", x: 640, y: 360, direction: "down", amount: 300 }
 - wait { type: "wait", ms: 2000 }
 - assert_text { type: "assert_text", text: "Expected text" }
+- assert_not_text { type: "assert_not_text", text: "Deleted item text" }
 - assert_visible { type: "assert_visible", x: 640, y: 360 }
 - done { type: "done", success: true, reason: "Test completed" }
 
@@ -169,11 +178,14 @@ Rules:
 - After actions that trigger navigation/loading, use wait { ms: 2000 }
 - If the page shows a loading spinner or skeleton, wait before acting
 - Prefer assert_text over assert_visible for verification
+- Use assert_not_text after deleting/removing something to verify it's gone
 
 Navigation tips:
 - If a modal, dialog, or overlay is blocking the page, press key "Escape" to dismiss it before trying other actions
 - If you can't find an element, try scrolling to reveal it
 - For icon-only buttons without text labels, use click(x,y) on the icon's coordinates
+- Use hover to reveal hidden elements (e.g. delete buttons, tooltips, menus that appear on hover)
+- Use drag to move elements, reorder items, or interact with sliders
 
 IMPORTANT - done action rules:
 - ONLY use done when ALL steps in the test description are completed

@@ -18,12 +18,16 @@ import { TestHealer } from "../agents/testHealer.js";
 import { MCPBrowserClient } from "../mcp/mcpClient.js";
 import { MCPExecutor } from "../mcp/mcpExecutor.js";
 import {
-  INDENT_LEVELS,
   color,
-  formatSuiteHeader,
-  formatTestHeader,
+  sym,
   logLine,
-  statusLabel,
+  logBlank,
+  formatHeader,
+  formatSuiteBar,
+  formatTestName,
+  printSummaryTable,
+  type TestSummaryRow,
+  type TokenTotals,
 } from "../ui/cliOutput.js";
 import { init } from "./init.js";
 
@@ -70,24 +74,6 @@ export async function run(suite: string | undefined, options: RunOptions) {
     process.exit(1);
   }
 
-  logLine(INDENT_LEVELS.suite, color.bold("Zentest Runner"));
-  logLine(INDENT_LEVELS.suite, `${statusLabel("info")} Target: ${envUrl}`);
-  logLine(INDENT_LEVELS.suite, `${statusLabel("info")} Provider: ${config.provider}`);
-  logLine(INDENT_LEVELS.suite, `${statusLabel("info")} Models:`);
-  logLine(INDENT_LEVELS.suite, `  - Agentic: ${config.models.agenticModel}`);
-  logLine(INDENT_LEVELS.suite, `  - Builder: ${config.models.builderModel}`);
-  logLine(INDENT_LEVELS.suite, `  - Healer:  ${config.models.healerModel}`);
-  if (options.agentic) {
-    logLine(INDENT_LEVELS.suite, `${statusLabel("warn")} Mode: Agentic (forced)`);
-  }
-  if (config.automationMode === "mcp") {
-    logLine(INDENT_LEVELS.suite, `${statusLabel("info")} Automation: MCP (Playwright MCP tools)`);
-  }
-  if (options.verbose) {
-    logLine(INDENT_LEVELS.suite, `${statusLabel("info")} Verbose: on`);
-  }
-  console.log("");
-
   // Determine headless mode
   let headless: boolean;
   if (options.headless) {
@@ -98,16 +84,21 @@ export async function run(suite: string | undefined, options: RunOptions) {
     headless = shouldRunHeadless(config);
   }
 
-  logLine(
-    INDENT_LEVELS.suite,
-    `${statusLabel("info")} Browser: ${headless ? "headless" : "visible"}`
+  // Print compact header
+  const headerLines = formatHeader(
+    envUrl,
+    config.provider,
+    config.automationMode === "mcp" ? "mcp" : "vision",
+    headless ? "headless" : "headed"
   );
+  for (const line of headerLines) logLine(0, line);
+  logBlank();
 
   // Check if any API key is available
   const hasAnthropicKey = !!process.env.ZENTEST_ANTHROPIC_API_KEY;
   const hasOpenAIKey = !!process.env.ZENTEST_OPENAI_API_KEY;
   const hasOpenRouterKey = !!process.env.ZENTEST_OPENROUTER_API_KEY;
-  
+
   if (!hasAnthropicKey && !hasOpenAIKey && !hasOpenRouterKey && !config.apiKey) {
     console.error("Error: API key required. Set ONE of the following:");
     console.error("  - ZENTEST_ANTHROPIC_API_KEY (for Anthropic/Claude)");
@@ -147,6 +138,10 @@ export async function run(suite: string | undefined, options: RunOptions) {
     viewport: config.viewport,
   });
 
+  const suiteStartTime = Date.now();
+  const summaryRows: TestSummaryRow[] = [];
+  const tokenTotals: TokenTotals = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+
   try {
     // Find test files
     const testFiles = fs
@@ -166,10 +161,11 @@ export async function run(suite: string | undefined, options: RunOptions) {
         context,
         agenticProvider,
         options,
-        headless
+        headless,
+        summaryRows,
+        tokenTotals
       );
     } else {
-      // Run all test files
       for (const file of testFiles) {
         await runTestFile(
           path.join(zentestsPath, file),
@@ -178,12 +174,20 @@ export async function run(suite: string | undefined, options: RunOptions) {
           context,
           agenticProvider,
           options,
-          headless
+          headless,
+          summaryRows,
+          tokenTotals
         );
       }
     }
   } finally {
     await browser.close();
+  }
+
+  // Print summary table
+  if (summaryRows.length > 0) {
+    const totalDuration = Date.now() - suiteStartTime;
+    printSummaryTable(summaryRows, totalDuration, tokenTotals.totalTokens > 0 ? tokenTotals : undefined);
   }
 }
 
@@ -194,32 +198,50 @@ async function runTestFile(
   context: Awaited<ReturnType<Browser["newContext"]>>,
   agenticProvider: ComputerUseProvider,
   options: RunOptions,
-  headless: boolean
+  headless: boolean,
+  summaryRows: TestSummaryRow[],
+  tokenTotals: TokenTotals
 ) {
   const testSuite = parseTestFile(filePath);
   const suiteName = path.basename(filePath, ".md");
 
-  console.log("");
-  logLine(INDENT_LEVELS.suite, formatSuiteHeader(testSuite.name));
+  logBlank();
+  logLine(0, formatSuiteBar(testSuite.name));
 
   // Static test path is now a single file for the entire suite
   const staticTestsDir = path.join(path.dirname(filePath), "static-tests");
   const staticTestPath = path.join(staticTestsDir, `${suiteName}.spec.js`);
+  const stepsPath = staticTestPath.replace(/\.spec\.js$/, ".steps.json");
   const hasStaticTest = fs.existsSync(staticTestPath);
 
-  // Decide whether to run agentic for the whole suite
-  const runAgentic = options.agentic || !hasStaticTest;
+  // Check if the static test covers all tests in the .md
+  let staticTestsOutdated = false;
+  if (hasStaticTest) {
+    const savedSteps = TestBuilder.loadSuiteSteps(stepsPath);
+    if (savedSteps) {
+      const savedNames = new Set(savedSteps.tests.map((t) => t.name));
+      const missingTests = testSuite.tests.filter((t) => !savedNames.has(t.name));
+      if (missingTests.length > 0) {
+        staticTestsOutdated = true;
+        logLine(1, color.yellow(`${sym.warn} Static tests cover ${savedNames.size}/${testSuite.tests.length} tests — missing: ${missingTests.map((t) => t.name).join(", ")}`));
+        logLine(1, color.dim(`${sym.info} Re-running full suite agentically...`));
+      }
+    } else if (!fs.existsSync(stepsPath)) {
+      // No steps.json at all — can't verify coverage, force agentic
+      staticTestsOutdated = true;
+      logLine(1, color.yellow(`${sym.warn} No steps.json found — re-running agentically`));
+    }
+  }
 
-  let passed = 0;
-  let failed = 0;
+  // Decide whether to run agentic for the whole suite
+  const runAgentic = options.agentic || !hasStaticTest || staticTestsOutdated;
 
   if (runAgentic) {
-    // Run agentic tests - share one page across all tests in the suite
+    // Run agentic tests
     const page = await context.newPage();
     const testResults: TestResult[] = [];
     let isFirstTest = true;
 
-    // Set up MCP executor if configured
     let mcpClient: MCPBrowserClient | undefined;
     let mcpExecutor: MCPExecutor | undefined;
     if (config.automationMode === "mcp") {
@@ -229,11 +251,11 @@ async function runTestFile(
 
     try {
       for (const test of testSuite.tests) {
-        console.log("");
-        logLine(INDENT_LEVELS.test, formatTestHeader(test.name));
-        logLine(INDENT_LEVELS.step, color.dim(`"${test.description}"`));
+        logBlank();
+        logLine(1, formatTestName(test.name));
+        logLine(2, color.dim(`"${test.description}"`));
+        logBlank();
 
-        // Only navigate to baseUrl on the first test
         const tester = new AgenticTester(page, baseUrl, agenticProvider, {
           maxSteps: config.maxSteps,
           viewport: config.viewport,
@@ -243,21 +265,26 @@ async function runTestFile(
         const result = await tester.run(test, { skipNavigation: !isFirstTest });
         isFirstTest = false;
 
+        // Collect stats
+        summaryRows.push({
+          name: test.name,
+          passed: result.success,
+          durationMs: result.durationMs,
+          actionCount: result.steps.length,
+        });
+        tokenTotals.inputTokens += result.tokenUsage.inputTokens;
+        tokenTotals.outputTokens += result.tokenUsage.outputTokens;
+        tokenTotals.totalTokens += result.tokenUsage.totalTokens;
+
         if (result.success) {
-          passed++;
           testResults.push({ test, steps: result.steps });
         } else {
-          failed++;
-          // Stop on first failure - subsequent tests likely depend on previous state
-          logLine(
-            INDENT_LEVELS.step,
-            `${statusLabel("warn")} Stopping suite - subsequent tests depend on previous state`
-          );
+          logLine(2, color.yellow(`${sym.warn} Stopping suite — subsequent tests depend on previous state`));
           break;
         }
       }
 
-      // Generate single static test file + steps sidecar if we have any successful results
+      // Generate static test file
       if (testResults.length > 0) {
         if (!fs.existsSync(staticTestsDir)) {
           fs.mkdirSync(staticTestsDir, { recursive: true });
@@ -267,37 +294,35 @@ async function runTestFile(
         const testCode = builder.generateSuite(testResults, testSuite);
         fs.writeFileSync(staticTestPath, testCode);
 
-        const stepsPath = staticTestPath.replace(/\.spec\.js$/, ".steps.json");
         TestBuilder.saveSuiteSteps(stepsPath, testResults, config.automationMode);
 
-        logLine(
-          INDENT_LEVELS.step,
-          `${statusLabel("check")} Generated static test (${config.automationMode}): ${staticTestPath}`
-        );
+        logBlank();
+        logLine(1, `${color.green(sym.pass)} Saved ${sym.arrow} ${color.dim(staticTestPath)}`);
       }
     } finally {
       if (mcpClient) await mcpClient.close();
       await page.close();
     }
   } else {
-    // Run the single combined static test file
+    // Run static tests
+    const staticStartTime = Date.now();
     const staticResult = await runStaticTest(staticTestPath, baseUrl, headless);
+    const staticDuration = Date.now() - staticStartTime;
+
     if (staticResult.passed) {
-      passed = testSuite.tests.length;
+      for (const test of testSuite.tests) {
+        summaryRows.push({ name: test.name, passed: true, durationMs: Math.round(staticDuration / testSuite.tests.length), actionCount: 0 });
+      }
     } else {
-      // --- Self-healing: replay passing tests then go agentic from failure (unless --no-heal) ---
+      // Self-healing
       if (options.heal === false) {
-        failed = testSuite.tests.length;
-        logLine(
-          INDENT_LEVELS.step,
-          `${statusLabel("info")} Self-healing disabled (--no-heal)`
-        );
+        for (const test of testSuite.tests) {
+          summaryRows.push({ name: test.name, passed: false, durationMs: 0, actionCount: 0 });
+        }
+        logLine(2, color.dim(`${sym.info} Self-healing disabled (--no-heal)`));
       } else {
-        // Load saved steps sidecar for partial replay
-        const stepsPath = staticTestPath.replace(/\.spec\.js$/, ".steps.json");
         const savedSteps = TestBuilder.loadSuiteSteps(stepsPath);
 
-        // Find the index of the failed test
         let failedTestIndex = 0;
         if (staticResult.failedTestName && savedSteps) {
           const idx = testSuite.tests.findIndex(
@@ -306,19 +331,12 @@ async function runTestFile(
           if (idx >= 0) failedTestIndex = idx;
         }
 
-        const canPartialReplay =
-          savedSteps && failedTestIndex > 0;
+        const canPartialReplay = savedSteps && failedTestIndex > 0;
 
         if (canPartialReplay) {
-          logLine(
-            INDENT_LEVELS.step,
-            `${statusLabel("info")} Healing: replaying ${failedTestIndex} passing test(s), then agentic from '${staticResult.failedTestName}'...`
-          );
+          logLine(2, color.dim(`${sym.info} Healing: replaying ${failedTestIndex} passing test(s), then agentic from '${staticResult.failedTestName}'...`));
         } else {
-          logLine(
-            INDENT_LEVELS.step,
-            `${statusLabel("info")} Healing: re-running suite agentically...`
-          );
+          logLine(2, color.dim(`${sym.info} Healing: re-running suite agentically...`));
         }
 
         const healPage = await context.newPage();
@@ -341,7 +359,6 @@ async function runTestFile(
           });
 
           if (healResult.testResults.length > 0) {
-            // Regenerate suite-level static test file + steps sidecar
             if (!fs.existsSync(staticTestsDir)) {
               fs.mkdirSync(staticTestsDir, { recursive: true });
             }
@@ -352,55 +369,50 @@ async function runTestFile(
             );
             fs.writeFileSync(staticTestPath, testCode);
             TestBuilder.saveSuiteSteps(stepsPath, healResult.testResults, config.automationMode);
-            logLine(
-              INDENT_LEVELS.step,
-              `${statusLabel("check")} Healer regenerated static test: ${staticTestPath}`
-            );
+            logLine(1, `${color.green(sym.pass)} Healer saved ${sym.arrow} ${color.dim(staticTestPath)}`);
 
-            // Verify the regenerated static tests actually run
-            logLine(
-              INDENT_LEVELS.step,
-              `${statusLabel("info")} Verifying regenerated static tests...`
-            );
-            const verified = await runStaticTest(
-              staticTestPath,
-              baseUrl,
-              headless
-            );
+            // Verify
+            logLine(2, color.dim(`${sym.info} Verifying regenerated static tests...`));
+            const verified = await runStaticTest(staticTestPath, baseUrl, headless);
+            // Only mark tests that the healer actually produced results for
+            const healedNames = new Set(healResult.testResults.map((r) => r.test.name));
+
             if (verified.passed) {
-              passed = testSuite.tests.length;
-              failed = 0;
-              logLine(
-                INDENT_LEVELS.step,
-                `${statusLabel("check")} Healed static tests verified`
-              );
-            } else {
-              // Static verification failed — the generated code is broken
-              // even though agentic tests passed. Count based on verification.
-              const verifiedFailed = verified.failedTestName;
-              if (verifiedFailed) {
-                const failIdx = testSuite.tests.findIndex(
-                  (t) => t.name === verifiedFailed
-                );
-                passed = failIdx >= 0 ? failIdx : 0;
-                failed = testSuite.tests.length - passed;
-              } else {
-                // Can't identify which test failed — report all as failed
-                passed = 0;
-                failed = testSuite.tests.length;
+              for (const test of testSuite.tests) {
+                summaryRows.push({
+                  name: test.name,
+                  passed: healedNames.has(test.name),
+                  durationMs: 0,
+                  actionCount: 0,
+                });
               }
-              logLine(
-                INDENT_LEVELS.step,
-                `${statusLabel("fail")} Regenerated static tests still fail${verifiedFailed ? ` at: ${verifiedFailed}` : ""}`
-              );
+              const allHealed = healedNames.size === testSuite.tests.length;
+              if (allHealed) {
+                logLine(2, `${color.green(sym.pass)} Healed static tests verified`);
+              } else {
+                logLine(2, `${color.green(sym.pass)} Healed ${healedNames.size}/${testSuite.tests.length} tests verified`);
+                logLine(2, `${color.yellow(sym.warn)} ${testSuite.tests.length - healedNames.size} test(s) could not be healed`);
+              }
+            } else {
+              const verifiedFailed = verified.failedTestName;
+              const failIdx = verifiedFailed
+                ? testSuite.tests.findIndex((t) => t.name === verifiedFailed)
+                : -1;
+              for (let i = 0; i < testSuite.tests.length; i++) {
+                summaryRows.push({
+                  name: testSuite.tests[i].name,
+                  passed: failIdx >= 0 ? i < failIdx : false,
+                  durationMs: 0,
+                  actionCount: 0,
+                });
+              }
+              logLine(2, `${color.red(sym.fail)} Regenerated static tests still fail${verifiedFailed ? ` at: ${verifiedFailed}` : ""}`);
             }
           } else {
-            // Agentic healing produced no results at all
-            failed = testSuite.tests.length;
-            logLine(
-              INDENT_LEVELS.step,
-              `${statusLabel("fail")} Healer failed: agentic run produced no passing tests`
-            );
+            for (const test of testSuite.tests) {
+              summaryRows.push({ name: test.name, passed: false, durationMs: 0, actionCount: 0 });
+            }
+            logLine(2, `${color.red(sym.fail)} Healer failed: no passing tests`);
           }
         } finally {
           if (healMcpClient) await healMcpClient.close();
@@ -409,14 +421,6 @@ async function runTestFile(
       }
     }
   }
-
-  const passedText = color.green(String(passed));
-  const failedText = failed > 0 ? color.red(String(failed)) : color.gray(String(failed));
-  console.log("");
-  logLine(
-    INDENT_LEVELS.test,
-    `${statusLabel(failed > 0 ? "fail" : "check")} Summary: ${passedText} passed, ${failedText} failed`
-  );
 }
 
 async function runStaticTest(
@@ -425,30 +429,17 @@ async function runStaticTest(
   headless: boolean
 ): Promise<StaticTestResult> {
   const cwd = process.cwd();
-  const cliPath = path.join(
-    cwd,
-    "node_modules",
-    "@playwright",
-    "test",
-    "cli.js"
-  );
+  const cliPath = path.join(cwd, "node_modules", "@playwright", "test", "cli.js");
 
   if (!fs.existsSync(cliPath)) {
-    logLine(
-      INDENT_LEVELS.step,
-      `${statusLabel("fail")} Playwright Test not found at ${cliPath}`
-    );
+    logLine(2, `${color.red(sym.fail)} Playwright Test not found at ${cliPath}`);
     return { passed: false };
   }
 
-  logLine(
-    INDENT_LEVELS.step,
-    `${statusLabel("info")} Running static test: ${staticTestPath}`
-  );
+  logLine(2, color.dim(`${sym.info} Running static test: ${staticTestPath}`));
 
   const args = [cliPath, "test", staticTestPath];
 
-  // Point Playwright at the config so its TS transformer registers properly
   const configPath = path.join(cwd, "playwright.config.ts");
   if (fs.existsSync(configPath)) {
     args.push("--config", configPath);
@@ -458,11 +449,7 @@ async function runStaticTest(
     args.push("--headed");
   }
 
-  // Use JSON reporter alongside list to identify which test failed
-  const jsonResultsPath = path.join(
-    tmpdir(),
-    `zentest-results-${Date.now()}.json`
-  );
+  const jsonResultsPath = path.join(tmpdir(), `zentest-results-${Date.now()}.json`);
   args.push("--reporter=list,json");
 
   const exitCode = await new Promise<number>((resolve) => {
@@ -477,36 +464,23 @@ async function runStaticTest(
     child.on("exit", (code) => resolve(code ?? 1));
   });
 
-  // Parse JSON results to find which test failed
   const failedTestName = parseFailedTestName(jsonResultsPath);
 
-  // Clean up temp file
-  try {
-    fs.unlinkSync(jsonResultsPath);
-  } catch {}
+  try { fs.unlinkSync(jsonResultsPath); } catch {}
 
   if (exitCode === 0) {
-    logLine(
-      INDENT_LEVELS.step,
-      `${statusLabel("check")} Static test passed`
-    );
+    logLine(2, `${color.green(sym.pass)} Static test passed`);
     return { passed: true };
   }
 
   if (failedTestName) {
-    logLine(
-      INDENT_LEVELS.step,
-      `${statusLabel("fail")} Static test failed at: ${failedTestName}`
-    );
+    logLine(2, `${color.red(sym.fail)} Static test failed at: ${failedTestName}`);
   } else {
-    logLine(INDENT_LEVELS.step, `${statusLabel("fail")} Static test failed`);
+    logLine(2, `${color.red(sym.fail)} Static test failed`);
   }
   return { passed: false, failedTestName };
 }
 
-/**
- * Parse Playwright JSON reporter output to find the first failed test name.
- */
 function parseFailedTestName(jsonPath: string): string | undefined {
   try {
     const data = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));

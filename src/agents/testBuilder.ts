@@ -95,7 +95,7 @@ export class TestBuilder {
     ];
 
     const seenAssertions = new Set<string>();
-    const hasTextAssertion = steps.some((s) => s.action.type === "assert_text");
+    const hasTextAssertion = steps.some((s) => s.action.type === "assert_text" || s.action.type === "assert_not_text");
 
     for (const step of steps) {
       // Skip steps that errored during the agentic run
@@ -106,7 +106,7 @@ export class TestBuilder {
       const code = this.stepToCode(step);
       if (code) {
         // Deduplicate identical assertions
-        const isAssertion = step.action.type === "assert_visible" || step.action.type === "assert_text";
+        const isAssertion = step.action.type === "assert_visible" || step.action.type === "assert_text" || step.action.type === "assert_not_text";
         if (hasTextAssertion && step.action.type === "assert_visible") {
           continue; // Prefer text assertions over visibility-only checks
         }
@@ -253,7 +253,7 @@ export class TestBuilder {
     }
 
     const seenAssertions = new Set<string>();
-    const hasTextAssertion = steps.some((s) => s.action.type === "assert_text");
+    const hasTextAssertion = steps.some((s) => s.action.type === "assert_text" || s.action.type === "assert_not_text");
 
     for (const step of steps) {
       // Skip steps that errored during the agentic run - they would fail in static replay too
@@ -264,7 +264,7 @@ export class TestBuilder {
       const code = this.stepToCode(step);
       if (code) {
         // Deduplicate identical assertions
-        const isAssertion = step.action.type === "assert_visible" || step.action.type === "assert_text";
+        const isAssertion = step.action.type === "assert_visible" || step.action.type === "assert_text" || step.action.type === "assert_not_text";
         if (hasTextAssertion && step.action.type === "assert_visible") {
           continue; // Prefer text assertions over visibility-only checks
         }
@@ -380,6 +380,10 @@ export class TestBuilder {
       case "assert_text": {
         // Use .first() to avoid strict mode violations when multiple elements match
         return `await expect(page.getByText('${this.escapeString(step.action.text)}', { exact: false }).first()).toBeVisible({ timeout: 10000 });`;
+      }
+
+      case "assert_not_text": {
+        return `await expect(page.getByText('${this.escapeString(step.action.text)}', { exact: false })).not.toBeVisible({ timeout: 5000 });`;
       }
 
       case "done":
