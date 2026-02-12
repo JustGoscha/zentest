@@ -197,6 +197,12 @@ export async function run(suite: string | undefined, options: RunOptions) {
     const totalDuration = Date.now() - suiteStartTime;
     printSummaryTable(summaryRows, totalDuration, tokenTotals.totalTokens > 0 ? tokenTotals : undefined);
   }
+
+  // Exit with non-zero code if any tests failed
+  const hasFailures = summaryRows.some((r) => !r.passed);
+  if (hasFailures) {
+    process.exitCode = 1;
+  }
 }
 
 async function runTestFile(
@@ -551,7 +557,11 @@ async function runTestFile(
               failedTestIndex: canPartialReplay ? failedTestIndex : undefined,
             });
 
-            if (healResult.testResults.length > 0) {
+            const healedNames = new Set(healResult.testResults.map((r) => r.test.name));
+            const allHealed = healedNames.size === testSuite.tests.length;
+
+            if (allHealed && healResult.testResults.length > 0) {
+              // All tests healed — save and verify
               if (!fs.existsSync(staticTestsDir)) {
                 fs.mkdirSync(staticTestsDir, { recursive: true });
               }
@@ -567,25 +577,12 @@ async function runTestFile(
               // Verify
               logLine(2, color.dim(`${sym.info} Verifying regenerated static tests...`));
               const verified = await runStaticTest(staticTestPath, baseUrl, headless);
-              // Only mark tests that the healer actually produced results for
-              const healedNames = new Set(healResult.testResults.map((r) => r.test.name));
 
               if (verified.passed) {
                 for (const test of testSuite.tests) {
-                  summaryRows.push({
-                    name: test.name,
-                    passed: healedNames.has(test.name),
-                    durationMs: 0,
-                    actionCount: 0,
-                  });
+                  summaryRows.push({ name: test.name, passed: true, durationMs: 0, actionCount: 0 });
                 }
-                const allHealed = healedNames.size === testSuite.tests.length;
-                if (allHealed) {
-                  logLine(2, `${color.green(sym.pass)} Healed static tests verified`);
-                } else {
-                  logLine(2, `${color.green(sym.pass)} Healed ${healedNames.size}/${testSuite.tests.length} tests verified`);
-                  logLine(2, `${color.yellow(sym.warn)} ${testSuite.tests.length - healedNames.size} test(s) could not be healed`);
-                }
+                logLine(2, `${color.green(sym.pass)} Healed static tests verified`);
               } else {
                 const verifiedFailed = verified.failedTestName;
                 const failIdx = verifiedFailed
@@ -600,6 +597,12 @@ async function runTestFile(
                   });
                 }
                 logLine(2, `${color.red(sym.fail)} Regenerated static tests still fail${verifiedFailed ? ` at: ${verifiedFailed}` : ""}`);
+              }
+            } else if (healResult.testResults.length > 0) {
+              // Partial heal — don't overwrite existing static tests with fewer results
+              logLine(2, `${color.red(sym.fail)} Healer only passed ${healedNames.size}/${testSuite.tests.length} tests — not saving partial results`);
+              for (const test of testSuite.tests) {
+                summaryRows.push({ name: test.name, passed: healedNames.has(test.name), durationMs: 0, actionCount: 0 });
               }
             } else {
               for (const test of testSuite.tests) {
