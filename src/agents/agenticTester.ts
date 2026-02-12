@@ -155,16 +155,17 @@ export class AgenticTester {
         const result = await this.executor.execute(action);
         progress.clear();
 
-        // Print action line
-        logLine(2, formatAction(this.actionCount + 1, this.formatActionSummary(action, result.elementInfo)));
+        // Print reasoning → action on one line
+        const actionLine = this.formatActionSummary(action, result.elementInfo);
+        const num = String(this.actionCount + 1).padStart(2, " ");
+        if (reasoning) {
+          logLine(2, `${color.dim(num)}  \u{1F916} ${color.dim(reasoning)} ${sym.arrow} ${actionLine}`);
+        } else {
+          logLine(2, formatAction(this.actionCount + 1, actionLine));
+        }
 
         if (result.error) {
           logLine(3, color.red(`${sym.fail} ${result.error}`));
-        }
-
-        // Show reasoning in the progress/spinner area (not a permanent line)
-        if (reasoning) {
-          progress.reasoning(reasoning);
         }
 
         // Record step

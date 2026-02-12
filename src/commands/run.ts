@@ -15,6 +15,7 @@ import { createProvider, ComputerUseProvider } from "../providers/index.js";
 import { AgenticTester } from "../agents/agenticTester.js";
 import { TestBuilder, TestResult } from "../agents/testBuilder.js";
 import { TestHealer } from "../agents/testHealer.js";
+import { TestRewriter } from "../agents/testRewriter.js";
 import { MCPBrowserClient } from "../mcp/mcpClient.js";
 import { MCPExecutor } from "../mcp/mcpExecutor.js";
 import {
@@ -34,6 +35,11 @@ import { init } from "./init.js";
 interface StaticTestResult {
   passed: boolean;
   failedTestName?: string;
+  testDurations?: Map<string, number>;
+  errorMessage?: string;
+  errorStack?: string;
+  failureScreenshotPath?: string;
+  runArtifactsDir?: string;
 }
 
 interface RunOptions {
@@ -298,6 +304,64 @@ async function runTestFile(
 
         logBlank();
         logLine(1, `${color.green(sym.pass)} Saved ${sym.arrow} ${color.dim(staticTestPath)}`);
+
+        // Verify the generated static tests actually work
+        logLine(2, color.dim(`${sym.info} Verifying generated static tests...`));
+        const verifyResult = await runStaticTest(staticTestPath, baseUrl, headless);
+
+        if (verifyResult.passed) {
+          logLine(2, `${color.green(sym.pass)} Static tests verified`);
+        } else if (verifyResult.failedTestName && verifyResult.errorMessage) {
+          logLine(2, `${color.yellow(sym.warn)} Static test failed at: ${verifyResult.failedTestName}`);
+
+          try {
+            const rewriter = new TestRewriter(config);
+            let currentResult = verifyResult;
+            let fixed = false;
+
+            for (let attempt = 1; attempt <= rewriter.maxAttempts; attempt++) {
+              logBlank();
+              logLine(1, `\u{270D}\u{FE0F}  ${color.magenta("Rewriter Agent")} ${color.dim(`(attempt ${attempt}/${rewriter.maxAttempts})`)}`);
+
+              const testFileContents = fs.readFileSync(staticTestPath, "utf-8");
+              const analysis = await rewriter.analyze({
+                failedTestName: currentResult.failedTestName!,
+                errorMessage: currentResult.errorMessage!,
+                errorStack: currentResult.errorStack,
+                testFileContents,
+                screenshotPath: currentResult.failureScreenshotPath,
+              });
+
+              logLine(2, `\u{1F4AD} ${color.dim(analysis.reasoning)}`);
+
+              if (analysis.decision === "AGENTIC") {
+                logLine(2, color.dim(`${sym.arrow} Cannot fix, keeping original`));
+                break;
+              }
+
+              if (analysis.decision === "REWRITE" && analysis.rewrittenCode) {
+                fs.writeFileSync(staticTestPath, analysis.rewrittenCode);
+                logLine(2, color.cyan(`${sym.arrow} Rewrote '${currentResult.failedTestName}', verifying...`));
+
+                const reVerify = await runStaticTest(staticTestPath, baseUrl, headless);
+                if (reVerify.passed) {
+                  logLine(2, `${color.green(sym.pass)} Rewrite fixed the test`);
+                  fixed = true;
+                  break;
+                } else {
+                  logLine(2, `${color.red(sym.fail)} Still failing`);
+                  currentResult = reVerify;
+                }
+              }
+            }
+
+            if (!fixed) {
+              logLine(2, color.dim(`${sym.info} Could not fix generated test, keeping best attempt`));
+            }
+          } catch (error) {
+            logLine(2, color.dim(`${sym.info} Rewriter error: ${error instanceof Error ? error.message : error}`));
+          }
+        }
       }
     } finally {
       if (mcpClient) await mcpClient.close();
@@ -311,7 +375,7 @@ async function runTestFile(
 
     if (staticResult.passed) {
       for (const test of testSuite.tests) {
-        summaryRows.push({ name: test.name, passed: true, durationMs: Math.round(staticDuration / testSuite.tests.length), actionCount: 0 });
+        summaryRows.push({ name: test.name, passed: true, durationMs: staticResult.testDurations?.get(test.name) ?? Math.round(staticDuration / testSuite.tests.length), actionCount: 0 });
       }
     } else {
       // Self-healing
@@ -321,102 +385,177 @@ async function runTestFile(
         }
         logLine(2, color.dim(`${sym.info} Self-healing disabled (--no-heal)`));
       } else {
-        const savedSteps = TestBuilder.loadSuiteSteps(stepsPath);
+        // ─── Phase 0: Smart Test Rewrite ───────────────────
+        let rewriteSucceeded = false;
 
-        let failedTestIndex = 0;
-        if (staticResult.failedTestName && savedSteps) {
-          const idx = testSuite.tests.findIndex(
-            (t) => t.name === staticResult.failedTestName
-          );
-          if (idx >= 0) failedTestIndex = idx;
-        }
+        if (staticResult.failedTestName && staticResult.errorMessage) {
+          logBlank();
+          logLine(1, `\u{270D}\u{FE0F}  ${color.magenta("Rewriter Agent")} ${color.dim(`(attempt 1/${new TestRewriter(config).maxAttempts})`)}`);
 
-        const canPartialReplay = savedSteps && failedTestIndex > 0;
+          try {
+            const rewriter = new TestRewriter(config);
+            let currentResult = staticResult;
+            let attempt = 0;
 
-        if (canPartialReplay) {
-          logLine(2, color.dim(`${sym.info} Healing: replaying ${failedTestIndex} passing test(s), then agentic from '${staticResult.failedTestName}'...`));
-        } else {
-          logLine(2, color.dim(`${sym.info} Healing: re-running suite agentically...`));
-        }
-
-        const healPage = await context.newPage();
-        let healMcpClient: MCPBrowserClient | undefined;
-        let healMcpExecutor: MCPExecutor | undefined;
-        if (config.automationMode === "mcp") {
-          healMcpClient = await MCPBrowserClient.create(context);
-          healMcpExecutor = new MCPExecutor(healPage, healMcpClient);
-        }
-        try {
-          const healer = new TestHealer(healPage, baseUrl, agenticProvider, {
-            maxSteps: config.maxSteps,
-            viewport: config.viewport,
-            verbose: options.verbose,
-          }, healMcpExecutor);
-
-          const healResult = await healer.healSuite(testSuite, {
-            savedSteps: canPartialReplay ? savedSteps : undefined,
-            failedTestIndex: canPartialReplay ? failedTestIndex : undefined,
-          });
-
-          if (healResult.testResults.length > 0) {
-            if (!fs.existsSync(staticTestsDir)) {
-              fs.mkdirSync(staticTestsDir, { recursive: true });
-            }
-            const builder = new TestBuilder(suiteName, "", config.automationMode);
-            const testCode = builder.generateSuite(
-              healResult.testResults,
-              testSuite
-            );
-            fs.writeFileSync(staticTestPath, testCode);
-            TestBuilder.saveSuiteSteps(stepsPath, healResult.testResults, config.automationMode);
-            logLine(1, `${color.green(sym.pass)} Healer saved ${sym.arrow} ${color.dim(staticTestPath)}`);
-
-            // Verify
-            logLine(2, color.dim(`${sym.info} Verifying regenerated static tests...`));
-            const verified = await runStaticTest(staticTestPath, baseUrl, headless);
-            // Only mark tests that the healer actually produced results for
-            const healedNames = new Set(healResult.testResults.map((r) => r.test.name));
-
-            if (verified.passed) {
-              for (const test of testSuite.tests) {
-                summaryRows.push({
-                  name: test.name,
-                  passed: healedNames.has(test.name),
-                  durationMs: 0,
-                  actionCount: 0,
-                });
+            while (attempt < rewriter.maxAttempts) {
+              attempt++;
+              if (attempt > 1) {
+                logBlank();
+                logLine(1, `\u{270D}\u{FE0F}  ${color.magenta("Rewriter Agent")} ${color.dim(`(attempt ${attempt}/${rewriter.maxAttempts})`)}`);
               }
-              const allHealed = healedNames.size === testSuite.tests.length;
-              if (allHealed) {
-                logLine(2, `${color.green(sym.pass)} Healed static tests verified`);
+
+              const testFileContents = fs.readFileSync(staticTestPath, "utf-8");
+
+              const analysis = await rewriter.analyze({
+                failedTestName: currentResult.failedTestName!,
+                errorMessage: currentResult.errorMessage!,
+                errorStack: currentResult.errorStack,
+                testFileContents,
+                screenshotPath: currentResult.failureScreenshotPath,
+              });
+
+              logLine(2, `\u{1F4AD} ${color.dim(analysis.reasoning)}`);
+
+              if (analysis.decision === "AGENTIC") {
+                logLine(2, color.dim(`${sym.arrow} Recommends agentic re-run`));
+                break;
+              }
+
+              if (analysis.decision === "REWRITE" && analysis.rewrittenCode) {
+                // Write the corrected test file
+                fs.writeFileSync(staticTestPath, analysis.rewrittenCode);
+                logLine(2, color.cyan(`${sym.arrow} Rewrote '${currentResult.failedTestName}', verifying...`));
+
+                // Re-run the static test
+                const verifyResult = await runStaticTest(staticTestPath, baseUrl, headless);
+
+                if (verifyResult.passed) {
+                  logLine(2, `${color.green(sym.pass)} Rewrite fixed the test`);
+                  for (const test of testSuite.tests) {
+                    summaryRows.push({
+                      name: test.name,
+                      passed: true,
+                      durationMs: verifyResult.testDurations?.get(test.name) ?? 0,
+                      actionCount: 0,
+                    });
+                  }
+                  rewriteSucceeded = true;
+                  break;
+                } else {
+                  logLine(2, color.dim(`${color.red(sym.fail)} Still failing`));
+                  currentResult = verifyResult;
+                  // Loop continues with new error info
+                }
+              }
+            }
+
+            if (!rewriteSucceeded && attempt >= rewriter.maxAttempts) {
+              logLine(2, color.dim(`${sym.info} Rewrite attempts exhausted, falling back to agentic healing...`));
+            }
+          } catch (error) {
+            logLine(2, color.dim(`${sym.info} Rewriter error: ${error instanceof Error ? error.message : error}, falling back to agentic...`));
+          }
+        }
+
+        // ─── Phase 1+2: Agentic TestHealer (existing flow) ───────
+        if (!rewriteSucceeded) {
+          const savedSteps = TestBuilder.loadSuiteSteps(stepsPath);
+
+          let failedTestIndex = 0;
+          if (staticResult.failedTestName && savedSteps) {
+            const idx = testSuite.tests.findIndex(
+              (t) => t.name === staticResult.failedTestName
+            );
+            if (idx >= 0) failedTestIndex = idx;
+          }
+
+          const canPartialReplay = savedSteps && failedTestIndex > 0;
+
+          if (canPartialReplay) {
+            logLine(2, color.dim(`${sym.info} Healing: replaying ${failedTestIndex} passing test(s), then agentic from '${staticResult.failedTestName}'...`));
+          } else {
+            logLine(2, color.dim(`${sym.info} Healing: re-running suite agentically...`));
+          }
+
+          const healPage = await context.newPage();
+          let healMcpClient: MCPBrowserClient | undefined;
+          let healMcpExecutor: MCPExecutor | undefined;
+          if (config.automationMode === "mcp") {
+            healMcpClient = await MCPBrowserClient.create(context);
+            healMcpExecutor = new MCPExecutor(healPage, healMcpClient);
+          }
+          try {
+            const healer = new TestHealer(healPage, baseUrl, agenticProvider, {
+              maxSteps: config.maxSteps,
+              viewport: config.viewport,
+              verbose: options.verbose,
+            }, healMcpExecutor);
+
+            const healResult = await healer.healSuite(testSuite, {
+              savedSteps: canPartialReplay ? savedSteps : undefined,
+              failedTestIndex: canPartialReplay ? failedTestIndex : undefined,
+            });
+
+            if (healResult.testResults.length > 0) {
+              if (!fs.existsSync(staticTestsDir)) {
+                fs.mkdirSync(staticTestsDir, { recursive: true });
+              }
+              const builder = new TestBuilder(suiteName, "", config.automationMode);
+              const testCode = builder.generateSuite(
+                healResult.testResults,
+                testSuite
+              );
+              fs.writeFileSync(staticTestPath, testCode);
+              TestBuilder.saveSuiteSteps(stepsPath, healResult.testResults, config.automationMode);
+              logLine(1, `${color.green(sym.pass)} Healer saved ${sym.arrow} ${color.dim(staticTestPath)}`);
+
+              // Verify
+              logLine(2, color.dim(`${sym.info} Verifying regenerated static tests...`));
+              const verified = await runStaticTest(staticTestPath, baseUrl, headless);
+              // Only mark tests that the healer actually produced results for
+              const healedNames = new Set(healResult.testResults.map((r) => r.test.name));
+
+              if (verified.passed) {
+                for (const test of testSuite.tests) {
+                  summaryRows.push({
+                    name: test.name,
+                    passed: healedNames.has(test.name),
+                    durationMs: 0,
+                    actionCount: 0,
+                  });
+                }
+                const allHealed = healedNames.size === testSuite.tests.length;
+                if (allHealed) {
+                  logLine(2, `${color.green(sym.pass)} Healed static tests verified`);
+                } else {
+                  logLine(2, `${color.green(sym.pass)} Healed ${healedNames.size}/${testSuite.tests.length} tests verified`);
+                  logLine(2, `${color.yellow(sym.warn)} ${testSuite.tests.length - healedNames.size} test(s) could not be healed`);
+                }
               } else {
-                logLine(2, `${color.green(sym.pass)} Healed ${healedNames.size}/${testSuite.tests.length} tests verified`);
-                logLine(2, `${color.yellow(sym.warn)} ${testSuite.tests.length - healedNames.size} test(s) could not be healed`);
+                const verifiedFailed = verified.failedTestName;
+                const failIdx = verifiedFailed
+                  ? testSuite.tests.findIndex((t) => t.name === verifiedFailed)
+                  : -1;
+                for (let i = 0; i < testSuite.tests.length; i++) {
+                  summaryRows.push({
+                    name: testSuite.tests[i].name,
+                    passed: failIdx >= 0 ? i < failIdx : false,
+                    durationMs: 0,
+                    actionCount: 0,
+                  });
+                }
+                logLine(2, `${color.red(sym.fail)} Regenerated static tests still fail${verifiedFailed ? ` at: ${verifiedFailed}` : ""}`);
               }
             } else {
-              const verifiedFailed = verified.failedTestName;
-              const failIdx = verifiedFailed
-                ? testSuite.tests.findIndex((t) => t.name === verifiedFailed)
-                : -1;
-              for (let i = 0; i < testSuite.tests.length; i++) {
-                summaryRows.push({
-                  name: testSuite.tests[i].name,
-                  passed: failIdx >= 0 ? i < failIdx : false,
-                  durationMs: 0,
-                  actionCount: 0,
-                });
+              for (const test of testSuite.tests) {
+                summaryRows.push({ name: test.name, passed: false, durationMs: 0, actionCount: 0 });
               }
-              logLine(2, `${color.red(sym.fail)} Regenerated static tests still fail${verifiedFailed ? ` at: ${verifiedFailed}` : ""}`);
+              logLine(2, `${color.red(sym.fail)} Healer failed: no passing tests`);
             }
-          } else {
-            for (const test of testSuite.tests) {
-              summaryRows.push({ name: test.name, passed: false, durationMs: 0, actionCount: 0 });
-            }
-            logLine(2, `${color.red(sym.fail)} Healer failed: no passing tests`);
+          } finally {
+            if (healMcpClient) await healMcpClient.close();
+            await healPage.close();
           }
-        } finally {
-          if (healMcpClient) await healMcpClient.close();
-          await healPage.close();
         }
       }
     }
@@ -438,12 +577,47 @@ async function runStaticTest(
 
   logLine(2, color.dim(`${sym.info} Running static test: ${staticTestPath}`));
 
+  // Create run artifacts directory
+  const suiteName = path.basename(staticTestPath, ".spec.js");
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const runsDir = path.join(cwd, "zentests", "runs");
+  const runArtifactsDir = path.join(runsDir, `${suiteName}-${timestamp}`);
+
+  cleanupOldRuns(runsDir);
+
   const args = [cliPath, "test", staticTestPath];
 
-  const configPath = path.join(cwd, "playwright.config.ts");
-  if (fs.existsSync(configPath)) {
-    args.push("--config", configPath);
+  // Create a temp Playwright config with screenshot + output settings
+  // (Playwright doesn't support --screenshot as a CLI flag)
+  // We read the user's config to preserve timeout and other settings,
+  // then write a self-contained temp config with screenshot + outputDir added.
+  const userConfigPath = path.join(cwd, "playwright.config.ts");
+  // Place temp config in project dir so @playwright/test resolves from node_modules
+  const tempConfigPath = path.join(cwd, `.zentest-pw-config-${Date.now()}.ts`);
+  let userTimeout = 120_000;
+  let userUseBlock = "";
+  if (fs.existsSync(userConfigPath)) {
+    try {
+      const src = fs.readFileSync(userConfigPath, "utf-8");
+      const timeoutMatch = src.match(/timeout\s*:\s*(\d[\d_]*)/);
+      if (timeoutMatch) userTimeout = Number(timeoutMatch[1].replace(/_/g, ""));
+      // Extract the use block content (simple heuristic)
+      const useMatch = src.match(/use\s*:\s*\{([^}]*)}/);
+      if (useMatch) userUseBlock = useMatch[1];
+    } catch {}
   }
+  const tempConfigContent = [
+    `import { defineConfig } from '@playwright/test';`,
+    `export default defineConfig({`,
+    `  timeout: ${userTimeout},`,
+    `  use: {${userUseBlock}`,
+    `    screenshot: 'on',`,
+    `  },`,
+    `  outputDir: ${JSON.stringify(runArtifactsDir)},`,
+    `});`,
+  ].join("\n");
+  fs.writeFileSync(tempConfigPath, tempConfigContent);
+  args.push("--config", tempConfigPath);
 
   if (!headless) {
     args.push("--headed");
@@ -464,31 +638,129 @@ async function runStaticTest(
     child.on("exit", (code) => resolve(code ?? 1));
   });
 
-  const failedTestName = parseFailedTestName(jsonResultsPath);
+  // Clean up temp config
+  try { fs.unlinkSync(tempConfigPath); } catch {}
 
-  try { fs.unlinkSync(jsonResultsPath); } catch {}
+  const { failedTestName, testDurations, errorMessage, errorStack } =
+    parseTestResults(jsonResultsPath);
+
+  // Save JSON results to artifacts dir
+  if (!fs.existsSync(runArtifactsDir)) {
+    fs.mkdirSync(runArtifactsDir, { recursive: true });
+  }
+  try {
+    fs.copyFileSync(jsonResultsPath, path.join(runArtifactsDir, "results.json"));
+    fs.unlinkSync(jsonResultsPath);
+  } catch {
+    try { fs.unlinkSync(jsonResultsPath); } catch {}
+  }
 
   if (exitCode === 0) {
     logLine(2, `${color.green(sym.pass)} Static test passed`);
-    return { passed: true };
+    logLine(2, color.dim(`${sym.info} Run artifacts: ${runArtifactsDir}`));
+    return { passed: true, testDurations, runArtifactsDir };
   }
+
+  // On failure: save additional artifacts
+  if (errorMessage || errorStack) {
+    fs.writeFileSync(
+      path.join(runArtifactsDir, "error.txt"),
+      `Test: ${failedTestName || "unknown"}\n\nError: ${errorMessage || ""}\n\nStack:\n${errorStack || ""}`
+    );
+  }
+
+  try {
+    fs.copyFileSync(staticTestPath, path.join(runArtifactsDir, path.basename(staticTestPath)));
+  } catch {}
+
+  const failureScreenshotPath = findFailureScreenshot(runArtifactsDir);
 
   if (failedTestName) {
     logLine(2, `${color.red(sym.fail)} Static test failed at: ${failedTestName}`);
   } else {
     logLine(2, `${color.red(sym.fail)} Static test failed`);
   }
-  return { passed: false, failedTestName };
+
+  if (failureScreenshotPath) {
+    logLine(2, color.dim(`${sym.info} Failure screenshot: ${failureScreenshotPath}`));
+  }
+  logLine(2, color.dim(`${sym.info} Run artifacts: ${runArtifactsDir}`));
+
+  return {
+    passed: false,
+    failedTestName,
+    testDurations,
+    errorMessage,
+    errorStack,
+    failureScreenshotPath,
+    runArtifactsDir,
+  };
 }
 
-function parseFailedTestName(jsonPath: string): string | undefined {
+function findFailureScreenshot(dir: string): string | undefined {
+  if (!fs.existsSync(dir)) return undefined;
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        const found = findFailureScreenshot(fullPath);
+        if (found) return found;
+      } else if (entry.name.endsWith(".png")) {
+        return fullPath;
+      }
+    }
+  } catch {}
+  return undefined;
+}
+
+function cleanupOldRuns(runsDir: string, keepLast = 10): void {
+  if (!fs.existsSync(runsDir)) return;
+  try {
+    const entries = fs.readdirSync(runsDir, { withFileTypes: true })
+      .filter(e => e.isDirectory())
+      .map(e => ({ name: e.name, path: path.join(runsDir, e.name) }))
+      .sort((a, b) => b.name.localeCompare(a.name)); // newest first (timestamp in name)
+
+    for (const entry of entries.slice(keepLast)) {
+      fs.rmSync(entry.path, { recursive: true, force: true });
+    }
+  } catch {}
+}
+
+function parseTestResults(jsonPath: string): {
+  failedTestName?: string;
+  testDurations: Map<string, number>;
+  errorMessage?: string;
+  errorStack?: string;
+} {
+  const testDurations = new Map<string, number>();
   try {
     const data = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
-    const specs: Array<{ title: string; ok: boolean }> = [];
+    const specs: Array<{ title: string; ok: boolean; duration: number; errorMessage?: string; errorStack?: string }> = [];
 
-    function collectSpecs(suite: { specs?: Array<{ title: string; ok: boolean }>; suites?: typeof suite[] }) {
+    function collectSpecs(suite: {
+      specs?: Array<{
+        title: string;
+        ok: boolean;
+        tests?: Array<{ results?: Array<{ duration?: number; error?: { message?: string; stack?: string } }> }>;
+      }>;
+      suites?: typeof suite[];
+    }) {
       for (const spec of suite.specs || []) {
-        specs.push({ title: spec.title, ok: spec.ok });
+        let duration = 0;
+        let errorMessage: string | undefined;
+        let errorStack: string | undefined;
+        for (const test of spec.tests || []) {
+          for (const result of test.results || []) {
+            duration += result.duration || 0;
+            if (result.error) {
+              errorMessage = result.error.message;
+              errorStack = result.error.stack;
+            }
+          }
+        }
+        specs.push({ title: spec.title, ok: spec.ok, duration, errorMessage, errorStack });
       }
       for (const child of suite.suites || []) {
         collectSpecs(child);
@@ -499,9 +771,18 @@ function parseFailedTestName(jsonPath: string): string | undefined {
       collectSpecs(suite);
     }
 
+    for (const spec of specs) {
+      testDurations.set(spec.title, spec.duration);
+    }
+
     const failed = specs.find((s) => !s.ok);
-    return failed?.title;
+    return {
+      failedTestName: failed?.title,
+      testDurations,
+      errorMessage: failed?.errorMessage,
+      errorStack: failed?.errorStack,
+    };
   } catch {
-    return undefined;
+    return { testDurations };
   }
 }
