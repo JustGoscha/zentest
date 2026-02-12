@@ -141,7 +141,12 @@ export async function run(suite: string | undefined, options: RunOptions) {
   }
 
   // Launch browser
-  const browser = await chromium.launch({ headless });
+  // In CI, use system Chrome to avoid needing Playwright's managed Chromium download
+  const browserChannel = config.browserChannel ?? (process.env.CI ? "chrome" : undefined);
+  const browser = await chromium.launch({
+    headless,
+    ...(browserChannel ? { channel: browserChannel } : {}),
+  });
   const context = await browser.newContext({
     viewport: config.viewport,
   });

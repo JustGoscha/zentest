@@ -40,6 +40,8 @@ export interface ZentestConfig {
    * - "mcp": Uses Playwright MCP tools for execution + auto-generated Playwright code
    */
   automationMode: AutomationMode;
+  /** Browser channel (e.g. "chrome" to use system Chrome instead of Playwright's Chromium) */
+  browserChannel?: string;
 }
 
 const DEFAULT_MODELS: ModelConfig = {
