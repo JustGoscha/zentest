@@ -105,11 +105,6 @@ Form filling:
 - ALWAYS use select_input for typing into form fields (email, password, search, etc.)
 - select_input { field: "Email", value: "user@example.com" } is preferred over click + type
 
-Waiting and timing:
-- After clicking a button that triggers navigation or an API call, use wait { ms: 2000 } to let the page load
-- If the page shows a loading spinner or skeleton, use wait { ms: 2000 } before the next action
-- If the page looks unchanged after a click, wait and take another look before trying again
-
 Assertions:
 - Prefer assert_text over assert_visible - it's more reliable
 - assert_text checks if text exists anywhere on the page. Use it to verify content loaded
@@ -118,8 +113,6 @@ Assertions:
 - When verifying something was deleted/removed, use assert_not_text
 
 Navigation tips:
-- If a modal, dialog, or overlay is blocking the page, press key "Escape" to dismiss it before trying other actions
-- If you can't find an element, try scrolling to reveal it
 - For icon-only buttons without text labels, use click(x,y) on the icon's coordinates
 - Use hover(x,y) to reveal hidden elements (e.g. delete buttons, tooltips, menus that appear on hover)
 - Use drag(startX, startY, endX, endY) to move elements, reorder items, or interact with sliders
@@ -144,7 +137,7 @@ ${historyText}
 
 Return JSON only:
 {
-  "actions": [/* one action, or assertion + done to finish */],
+  "actions": [/* list of actions or assertions + done to finish */],
   "reasoning": "brief explanation of what you see and what you're doing"
 }
 

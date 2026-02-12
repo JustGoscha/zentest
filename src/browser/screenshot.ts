@@ -12,6 +12,7 @@ export async function captureScreenshot(page: Page): Promise<Buffer> {
   return await page.screenshot({
     type: "png",
     fullPage: false,
+    timeout: 30000,
   });
 }
 

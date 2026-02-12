@@ -57,7 +57,7 @@ export class BrowserExecutor {
 
   constructor(page: Page) {
     this.page = page;
-    this.page.setDefaultTimeout(5000);
+    this.page.setDefaultTimeout(15000);
   }
 
   /**
